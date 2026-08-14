@@ -7,3 +7,4 @@ data/
 .ultralytics/
 _chm_extract/
 opensource
+node_modules/

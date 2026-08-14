@@ -1,0 +1,16 @@
+# Phase-zero terminal surface. The Harness base bundle remains the owner of
+# Agent, persistence, tools, policy, sandbox, and model services.
+- id: hmr
+  disabled: true
+
+- insert:
+    - id: tui-startup
+      name: '@deepseek-ai/dsh-tui/startup'
+
+    - id: tui-runner
+      name: '@deepseek-ai/dsh-tui'
+      inject: [tuiStartup]
+      config:
+        task: !!js ctx.tuiStartup.task
+        alternateScreen: !!js ctx.tuiStartup.alternateScreen
+        maxEvents: 200

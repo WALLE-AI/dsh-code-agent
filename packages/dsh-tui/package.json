@@ -1,0 +1,16 @@
+{
+  "name": "@deepseek-ai/dsh-tui",
+  "version": "0.0.0-phase0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/plugin.ts",
+    "./startup": "./src/startup.ts",
+    "./cordis.patch.yml": "./cordis.patch.yml"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}

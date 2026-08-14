@@ -1021,6 +1021,20 @@ interface TuiConfig {
 
 退出条件：最小 TUI 能完成“发送任务 -> 允许一次 Bash -> 流式显示 -> 正常退出”，并证明 root dispose 后无子进程。
 
+#### 阶段 0 执行记录（2026-08-14）
+
+当前已完成可合并 spike，但阶段退出门禁仍保持打开，不把尚未执行的终端矩阵记为通过：
+
+- TUI 工程已独立落在仓库根目录的 `packages/dsh-tui`，未修改 `opensource/deepseek-harness` 或 `opensource/cordis`。外置 bundle 通过 profile-local symlink 接入真实 Harness Loader。
+- `upstream-compat.json` 固定 Harness `5c63574`、独立 Cordis 参考 `8cc9e33`、Harness `0.1.0-rc.5`、session format 0、Node/pnpm/TypeScript/Ink/React tuple；`scripts/check-upstream.ts` 对关键服务签名做只读 fail-fast 检查。
+- `src/harness-adapter.ts` 是唯一上游耦合点；TUI 自有 `contracts`、store、approval queue 和 Ink app 不导入 Harness/Cordis 源码。真实 `AgentHandle` 在 adapter 内保留到 flush 与 dispose 完成。
+- 真实 profile smoke 已验证外置 base + TUI 组合、TUI 自有 `--help` 和非 TTY fail-loud。Ink 6.8.0 因实际要求 React 19 被淘汰，当前验证组合为 Ink 5.2.1 + React 18.3.1。
+- 对象层测试已覆盖有界事件尾部、store 发布、审批 FIFO、allow-once/reject、AbortSignal cancel 和 unmount unavailable；未决审批不会因 abort/dispose 悬挂。
+- 确定性 mock LLM + `node-pty` 已跑通真实“任务 -> Bash escalation -> y -> tool result -> stream -> flush/dispose -> exit 0”链路；脚本同时验证进程退出且不会遗留等待中的审批。
+- 尚未完成：resize/alternate-screen 恢复、Node 22、Unicode 宽度/中文 IME、SSH/tmux，以及 8 类真实 event fixture。权威状态见 `docs/phase-0-compatibility-matrix.md`。
+
+因此本次结果定义为“阶段 0 最小退出链路与自动化基线完成，扩展终端矩阵和事件样本待补”，不能宣称阶段 0 全部门禁已验收关闭。
+
 ### 阶段 1：无 UI 的 TUI runtime（第 2 至 3 周）
 
 交付物：`dsh-tui-runtime`、薄 projection/parity 测试、controller 测试。

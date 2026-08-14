@@ -1,0 +1,31 @@
+{
+  "name": "deepseek-harness-cordis-tui-workspace",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@11.7.0",
+  "engines": {
+    "node": "^22.19.0 || >=24.0.0"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "vitest run",
+    "check:upstream": "node --import tsx/esm scripts/check-upstream.ts",
+    "check:profile": "node --import tsx/esm scripts/profile-smoke.ts",
+    "check:interactive": "node --import tsx/esm scripts/interactive-smoke.ts",
+    "check": "pnpm run check:upstream && pnpm run build && pnpm run test && pnpm run check:profile && pnpm run check:interactive",
+    "tui": "node --import tsx/esm scripts/launch-tui.ts"
+  },
+  "dependencies": {
+    "commander": "^14.0.0",
+    "ink": "5.2.1",
+    "react": "18.3.1"
+  },
+  "devDependencies": {
+    "@types/node": "^24.2.1",
+    "@types/react": "~18.3.1",
+    "node-pty": "^1.1.0",
+    "tsx": "^4.20.3",
+    "typescript": "^6.0.3",
+    "vitest": "^3.2.4"
+  }
+}
