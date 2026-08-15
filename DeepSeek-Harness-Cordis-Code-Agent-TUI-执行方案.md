@@ -2,7 +2,7 @@
 
 > 文档状态：可执行设计稿  
 > 编制日期：2026-08-14  
-> 源码基线：`deepseek-harness-master` `5c63574`（公开包 `0.1.0-rc.5`，session format `0`）；Harness vendored Cordis `56b3d4f`；独立 Cordis `8cc9e33`  
+> 源码基线：`opensource/deepseek-harness` `47f9438`（公开包 `0.1.0-rc.5`，session format `0`）；Harness vendored Cordis `56b3d4f`；独立 Cordis `8cc9e33`
 > 目标：在保留 DeepSeek Harness 插件体系、Agent loop、会话日志、工具流水线和安全策略的前提下，构建一个键盘优先、面向真实代码仓库工作的交互式 TUI 产品。
 
 ## 0. 执行摘要
@@ -164,7 +164,7 @@ P0 必须遵守以下限制，避免 TUI 本身演变成第二个产品内核：
 
 #### 2.7.1 单一 Cordis 来源
 
-- 产品运行时只使用 `deepseek-harness-master/vendor/cordis` 对应的 `@deepseek-ai/cordis`，它与 Harness commit 作为一个不可拆分的兼容单元。
+- 产品运行时只使用 `opensource/deepseek-harness/vendor/cordis` 对应的 `@deepseek-ai/cordis`，它与 Harness commit 作为一个不可拆分的兼容单元。
 - `deepseek-harness/cordis` 独立仓库仅用于研究和上游同步，不出现在 TUI 的 dependency、workspace link 或 lockfile 解析结果中。
 - 需要升级 Cordis 时，必须先按 Harness `vendor/README.md` 流程同步到 Harness vendor，再以该 Harness commit 升级 TUI；禁止 TUI 单独升级 Cordis。
 - CI 验证运行时依赖闭包中只有一份 `@deepseek-ai/cordis`；出现第二实例直接阻断构建。
@@ -222,7 +222,7 @@ interface AgentHandle {
 
 ### 2.8 源码审阅结论与方案修正
 
-本节是对 `deepseek-harness-master` 各核心、interaction、session、client、boot 包以及 vendored Cordis 的实现核对结果。以下问题若不修正，会导致 TUI 与真实 API 不匹配，或重复建设现有客户端语义。
+本节是对 `opensource/deepseek-harness` 各核心、interaction、session、client、boot 包以及 vendored Cordis 的实现核对结果。以下问题若不修正，会导致 TUI 与真实 API 不匹配，或重复建设现有客户端语义。
 
 | 严重度 | 原方案问题/不足 | 源码事实 | 修正后的约束 |
 |---|---|---|---|
@@ -1030,8 +1030,8 @@ interface TuiConfig {
 - `src/harness-adapter.ts` 是唯一上游耦合点；TUI 自有 `contracts`、store、approval queue 和 Ink app 不导入 Harness/Cordis 源码。真实 `AgentHandle` 在 adapter 内保留到 flush 与 dispose 完成。
 - 真实 profile smoke 已验证外置 base + TUI 组合、TUI 自有 `--help` 和非 TTY fail-loud。Ink 6.8.0 因实际要求 React 19 被淘汰，当前验证组合为 Ink 5.2.1 + React 18.3.1。
 - 对象层测试已覆盖有界事件尾部、store 发布、审批 FIFO、allow-once/reject、AbortSignal cancel 和 unmount unavailable；未决审批不会因 abort/dispose 悬挂。
-- 确定性 mock LLM + `node-pty` 已跑通真实“任务 -> Bash escalation -> y -> tool result -> stream -> flush/dispose -> exit 0”链路；脚本同时验证进程退出且不会遗留等待中的审批。
-- 尚未完成：resize/alternate-screen 恢复、Node 22、Unicode 宽度/中文 IME、SSH/tmux，以及 8 类真实 event fixture。权威状态见 `docs/phase-0-compatibility-matrix.md`。
+- 确定性 mock LLM + `node-pty` 已跑通真实“任务 -> 平台 Shell escalation（Windows `pwsh`，其他平台 `bash`）-> y -> tool result -> stream -> flush/dispose -> exit 0”链路；脚本同时验证进程退出且不会遗留等待中的审批。
+- 阶段 0 后续矩阵仍未完成 Unicode 终端宽度/手工中文 IME 与 SSH/tmux；Node 22/24、resize/alternate-screen 恢复已在阶段 2 自动化，8 类真实 event fixture 已在阶段 1 补齐。权威状态见 `docs/phase-0-compatibility-matrix.md`。
 
 因此本次结果定义为“阶段 0 最小退出链路与自动化基线完成，扩展终端矩阵和事件样本待补”，不能宣称阶段 0 全部门禁已验收关闭。
 
@@ -1050,6 +1050,23 @@ interface TuiConfig {
 
 退出条件：对同一 fixture，逐事件 live append 与一次性 seed fold 得到相等投影，关键节点与 Web snapshot 语义一致；取消、handle dispose 和异常 observer 均不泄漏。
 
+#### 阶段 1 迭代记录（2026-08-14）
+
+阶段 1 已于 2026-08-15 完成关闭；以下记录保留其增量过程与最终验收证据：
+
+- 新增上游无关的 `ConversationProjection` 与 `TranscriptNode`/`ToolNode` contract；projection、store 和 Ink app 均不导入 Harness/Cordis 类型。
+- `assistant/chunk` 按 message 合并，持久 `assistant/message` 覆盖 streaming 草稿；覆盖 chunk 无 message id、final 有 id 以及 Unicode 文本，避免 seed/live 产生双份 assistant 节点。
+- `tool/call` 与 `tool/result` 按 call id 配对，支持并行完成、失败结果和 `parentCallId`；`turn/end` 到达时仍未完成的工具标记为 `interrupted`。
+- seq gate 对完全重复事件幂等，对冲突 duplicate、gap 和未知 required event 暂停投影；`rebuild()` 可从完整事件数组恢复。adapter 为已知但不呈现的事件产生 `ignored` 占位，保留连续 seq，不再静默丢掉 envelope。
+- 新增 keyless conversation fixture、6 组 projection 测试与 8 组真实 envelope/恢复/服务契约 adapter 测试，证明逐事件 live append 和一次性 rebuild 深度相等并约束终端节点上限；adapter 以 Harness 的 `KNOWN_SESSION_EVENT_TYPES` 与 envelope `ignorable` 为准区分可忽略和未知必需事件，并从 `message.callId`/`data.error` 读取工具结果。当前 strict TypeScript、26 个测试、上游 tuple、真实 profile、Windows PTY 交互和 `git diff --check` 门禁通过。
+- 2026-08-15 补充真实 provider 验证：`check:real` 通过真实 Harness TUI profile 调用 DeepSeek 公网 API，终端收到流式响应，并由临时会话 JSONL 证明实际选择为 `deepseek-official` / `deepseek-v4-pro` / `high`；凭证仅从进程环境读取，不落盘，也不纳入默认 keyless `check`。
+- 2026-08-15 完成 live 排序故障自愈：adapter 在 projection 检出 gap 或冲突重复后，从事件回调所属 session 的 authoritative `events` 全量规范化并重建；完整日志恢复为 healthy，不完整日志继续暂停，未知必需语义不触发无意义重建并保持 fail-closed。
+- 2026-08-15 完成可复用 `AgentController`：上游中立 port 覆盖 create、resume、followup、steer、typed cancel、whenIdle、flush 与 exactly-once dispose；attach 失败可重试，attach 中 dispose 会等待并释放迟到 handle，teardown 错误不吞。一次性 TUI runner 已改为使用该 controller，adapter 黑盒测试通过真实 Harness runtime 模块核对 create/resume 选项、消息编码、seed rebuild 和持久化调用。
+- 2026-08-15 接入真实 Session surface 的 registered projection：controller session 与 TUI store 携带 `ctx.sessionProjections` 的 detached 一致快照，change feed 按精确 Session identity 过滤；create/resume 均发布 seed/current snapshot，订阅或首次 observer 失败会回滚 projection listener 与 AgentHandle。Web Conversation assembler 属于未挂载的 client registry，终端 transcript 暂保留薄 fold，不把客户端实现错误当作宿主服务复用。
+- 2026-08-15 从固定 Harness checkout 纳入 8 类原始 session fixture：text、parallel tools、Code Mode、failed shell、diff、compaction、subagent、approval rejected。每个 fixture 均验证逐事件 live append 与一次性 seed rebuild 深度相等；Code Mode 的父子调用、失败结果与 Web `ui.expected.md` 关键语义一致，并修复 `message.source.callId`、嵌套 `isError`、`data.meta` 等真实持久化形状。
+- 2026-08-15 完成 Commands、Question 与 tool presentation adapter：普通文本只走 Agent followup，slash command 只走精确 Agent 的 `ctx.commands.execute()`，unknown/malformed command 不穿透模型；root Question provider 只接受 exact root，child 明确拒绝且 FIFO/abort/dispose 无悬挂；工具 presenter 通过有效 definition 软调用 `presentCall`/`presentResult`，未知 card、缺失或抛错均降级 generic。
+- 阶段 1 退出条件已满足：8 组真实 fixture 的 live/seed 投影相等，关键 Code Mode 节点与 Web snapshot 语义一致；controller cancel/dispose、attach failure、异常 observer、approval/question teardown 均有自动化覆盖。关闭时严格 TypeScript 与 39 项 runtime 测试通过，随后阶段 2 首个纵切将总数扩展为 41 项。
+
 ### 阶段 2：主界面与输入系统（第 3 至 5 周）
 
 交付物：可日常使用的单会话 TUI。
@@ -1063,6 +1080,25 @@ interface TuiConfig {
 - 实现窄屏/低高度降级和无色模式。
 
 退出条件：在 80x24 和 160x50 下完成 30 分钟会话，无明显闪烁、重排错误或输入丢失；10000 个事件的恢复保持可交互。
+
+#### 阶段 2 迭代记录（2026-08-15）
+
+已完成主界面与输入系统的第一个可运行纵切，阶段 2 尚未关闭：
+
+- Ink 视图拆出 header、transcript、composer 与 status line；modal 输入优先于 composer，approval 不再发生按键穿透，单问题选项可用数字回答。
+- 新增纯 `ComposerState` reducer，覆盖中文/IME 文本块、bracketed paste、多行、Unicode backspace、提交历史与上下浏览；空白输入不发送。
+- 新增 opt-in `--interactive` 单会话模式。首任务结束后继续持有同一个 `AgentController`，follow-up 与 slash command 复用阶段 1 adapter，提交后等待 idle 并 flush；本地 `/quit` 等待队列收敛后执行 durable dispose。默认一次性行为保持兼容。
+- Windows ConPTY 自动化已扩展为“首任务 -> Shell approval -> stream -> composer follow-up -> 第二次模型请求 -> `/quit` -> exit 0”，并修正 PTY 文本块与 Enter 必须分离注入的测试语义。
+- 2026-08-15 完成 transcript viewport 状态机：默认自动跟随底部，PageUp 暂停并按距底偏移保持内容锚点，新行和同一 streaming 行修订均累计未读，PageDown 回到底部清零；终端 resize 会重新计算固定 transcript 高度并夹紧偏移。
+- 2026-08-15 接入 exact Agent 的命令目录：composer 输入 `/` 前缀显示最多三项过滤候选，真实命令仍只调用 `ctx.commands.execute()`；本地 `/help` 展示当前命令目录，`/quit` 等待提交队列后退出。命令描述和 Store 快照均做 detached copy。
+- 2026-08-15 新增 10,000 event rebuild 自动化以及 80x24、160x50 两组真实 ConPTY smoke；两种尺寸均完成 task、Shell approval、follow-up、`/help`、`/quit` 和 dispose。后续将 seed fold 改为批量折叠、仅在完成/暂停时发布一次 immutable snapshot，10,000 事件所在测试文件由秒级降至约 24ms，同时保持 live 逐事件发布与 fixture parity。当前 strict TypeScript 与 51 项测试通过。
+- 2026-08-15 完成结构化 Question modal：一个 provider 请求可逐题处理单选、多选和 Unicode 自由文本/Other，option 光标支持任意长度列表；Queue 在解除 Agent 等待前验证问题覆盖、唯一 id、合法 label、单选基数和非空答案。真实 80x12 PTY 显式挂载官方 `dsh-tool-ask-user`，完成两题回答，并从下一次模型请求体确认 `Careful` 与中文 Other 已作为 tool result 返回。
+- 2026-08-15 完成动态终端生命周期验证：160x50 ConPTY 以 alternate-screen 启动，交互中缩至 80x24、确认重绘后发送 follow-up，再恢复 160x50 完成 `/help`、`/quit`；测试断言 `1049h`/`1049l` 进入与恢复序列，证明正常退出后主屏被还原。
+- 2026-08-15 新增 `--no-color` 并贯穿 startup -> Cordis config -> Ink renderer；Question PTY 在无色模式下完成全链路，并断言不存在 ANSI 30-37/90-97 前景色码。启动参数测试锁定默认 color、interactive、alternate-screen 的独立语义。当前 strict TypeScript 与 51 项测试通过。
+- 2026-08-15 完成低高度行预算：布局按实际 header、transcript、modal/composer、notice/error 和 status 行数分配 viewport；低于 16 行时隐藏次要 detail/reason、将 option/command 窗口收缩为一行，空间继续不足时先移除 status/header。真实 80x12 Question PTY 完成结构化回答、follow-up、`/help`、`/quit` 与无色断言；纯布局测试覆盖 8 行复杂 modal，当前 strict TypeScript 与 55 项测试通过。
+- 2026-08-15 建立并跑通可重复的单会话 soak 门禁：`check:soak` 实际运行 30 分钟，持续复用同一 Agent，在 80x24、160x50、80x12 间轮换，共完成 352 次 follow-up 和 352 次 resize、354 次模型请求，处理约 1.31 MB PTY 输出；每轮 watchdog、整体期限、正常 `/quit` 和 alternate-screen 恢复断言均通过。驱动始终只保留 128 KiB 输出尾部。相同状态机的 10 秒 quick gate 已纳入常规 `check`。
+- 2026-08-15 完成 Node 22/24 runtime matrix：固定官方 Node v22.23.2，由同一 `process.execPath` 驱动 TypeScript、55 项测试、真实 profile、80x24 approval、160x50 resize/alternate-screen、80x12 Question/no-color 与 quick soak。Node 22 首轮暴露 Question PTY 在 Ink 重绘回调中立即写入会丢失的问题；改为画面检测后延迟 50ms 注入并清理 pending timer 后，完整矩阵通过。系统 Node v24.14.0 常规门禁保持通过。
+- 尚未完成：手工 Unicode 宽度/IME 与 SSH/tmux 矩阵。因此阶段 2 继续进行中。
 
 ### 阶段 3：代码工具体验（第 5 至 6 周）
 

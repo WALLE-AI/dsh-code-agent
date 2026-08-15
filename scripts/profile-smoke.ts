@@ -5,7 +5,7 @@ import { dirname, join, resolve } from 'node:path'
 import { spawnSync } from 'node:child_process'
 
 const root = resolve(import.meta.dirname, '..')
-const harness = join(root, 'opensource/deepseek-harness/deepseek-harness-master')
+const harness = join(root, 'opensource/deepseek-harness')
 const home = mkdtempSync(join(tmpdir(), 'dsh-tui-profile-smoke-'))
 const profile = join(home, 'profiles/tui')
 const link = join(profile, 'node_modules/@deepseek-ai/dsh-tui')

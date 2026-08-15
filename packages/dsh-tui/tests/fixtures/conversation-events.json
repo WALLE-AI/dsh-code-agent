@@ -1,0 +1,16 @@
+[
+  { "seq": 10, "kind": "user", "messageId": "u1", "text": "Fix the failing test" },
+  { "seq": 11, "kind": "assistant-delta", "messageId": "a1", "text": "I will " },
+  { "seq": 12, "kind": "assistant-delta", "messageId": "a1", "text": "inspect it." },
+  { "seq": 13, "kind": "tool-call", "callId": "shell-1", "name": "bash", "text": "pnpm test" },
+  { "seq": 14, "kind": "tool-call", "callId": "read-1", "name": "read", "text": "src/app.ts", "parentCallId": "code-mode-1" },
+  { "seq": 15, "kind": "ignored", "text": "approval/requested" },
+  { "seq": 16, "kind": "tool-result", "callId": "read-1", "text": "export const value = 1" },
+  { "seq": 17, "kind": "tool-result", "callId": "shell-1", "text": "1 test failed", "failed": true },
+  { "seq": 18, "kind": "ignored", "text": "session/compaction" },
+  { "seq": 19, "kind": "tool-call", "callId": "diff-1", "name": "apply_patch", "text": "src/app.ts" },
+  { "seq": 20, "kind": "tool-result", "callId": "diff-1", "text": "+export const value = 2" },
+  { "seq": 21, "kind": "ignored", "text": "subagent/completed" },
+  { "seq": 22, "kind": "assistant-final", "messageId": "a1", "text": "Fixed the test." },
+  { "seq": 23, "kind": "turn-end", "text": "completed" }
+]

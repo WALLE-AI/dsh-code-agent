@@ -13,4 +13,6 @@
       config:
         task: !!js ctx.tuiStartup.task
         alternateScreen: !!js ctx.tuiStartup.alternateScreen
+        interactive: !!js ctx.tuiStartup.interactive
+        color: !!js ctx.tuiStartup.color
         maxEvents: 200

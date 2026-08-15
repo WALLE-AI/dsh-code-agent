@@ -4,7 +4,7 @@ Status: accepted (phase 0)
 
 ## Context
 
-`opensource/deepseek-harness/deepseek-harness-master` and its vendored Cordis will continue to update. Building the TUI inside either checkout would mix product ownership with an upstream mirror and turn routine updates into source merges. Pulling the Web client runtime into the terminal would also carry Host, browser state, and a product-sized dependency closure.
+`opensource/deepseek-harness` and its vendored Cordis will continue to update. Building the TUI inside that checkout would mix product ownership with an upstream mirror and turn routine updates into source merges. Pulling the Web client runtime into the terminal would also carry Host, browser state, and a product-sized dependency closure.
 
 ## Decision
 

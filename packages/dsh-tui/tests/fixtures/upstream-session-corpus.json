@@ -1,0 +1,35 @@
+[
+  {
+    "name": "text",
+    "path": "examples/acp-agent/tests/snapshots/text-turn/session.jsonl"
+  },
+  {
+    "name": "parallel-tools",
+    "path": "examples/acp-agent/tests/snapshots/parallel-tool-calls/session.jsonl"
+  },
+  {
+    "name": "code-mode",
+    "path": "apps/web/tests/snapshots/code-mode-round/session.jsonl",
+    "webSnapshot": "apps/web/tests/snapshots/code-mode-round/ui.expected.md"
+  },
+  {
+    "name": "failed-shell",
+    "path": "examples/acp-agent/tests/snapshots/missing-sandbox-runner/session.jsonl"
+  },
+  {
+    "name": "diff",
+    "path": "examples/acp-agent/tests/snapshots/fs-edit/session.jsonl"
+  },
+  {
+    "name": "compaction",
+    "path": "examples/headless-agent/tests/snapshots/compaction-recovery/session.jsonl"
+  },
+  {
+    "name": "subagent",
+    "path": "examples/acp-agent/tests/snapshots/subagent-spawn-in-process/session.jsonl"
+  },
+  {
+    "name": "approval-rejected",
+    "path": "examples/acp-agent/tests/snapshots/escalation-rejected/session.jsonl"
+  }
+]

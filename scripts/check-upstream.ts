@@ -1,11 +1,20 @@
 import { readFileSync } from 'node:fs'
+import { execFileSync } from 'node:child_process'
 import { join, resolve } from 'node:path'
 
 const root = resolve(import.meta.dirname, '..')
 const baseline = JSON.parse(readFileSync(join(root, 'upstream-compat.json'), 'utf8')) as {
-  harness: { path: string; version: string; sessionFormat: number }
+  harness: { path: string; commit: string; version: string; sessionFormat: number }
 }
 const harness = join(root, baseline.harness.path)
+const commit = execFileSync('git', [
+  '-c', `safe.directory=${harness.replaceAll('\\', '/')}`,
+  '-C', harness,
+  'rev-parse', 'HEAD',
+], { encoding: 'utf8' }).trim()
+if (commit !== baseline.harness.commit) {
+  throw new Error(`Harness commit changed: expected ${baseline.harness.commit}, found ${commit}`)
+}
 const manifest = JSON.parse(readFileSync(join(harness, 'package.json'), 'utf8')) as { version: string }
 if (manifest.version !== baseline.harness.version) {
   throw new Error(`Harness version changed: expected ${baseline.harness.version}, found ${manifest.version}`)
@@ -27,4 +36,4 @@ const format = Number(/SESSION_FORMAT_VERSION\s*=\s*(\d+)/.exec(sessionTypes)?.[
 if (format !== baseline.harness.sessionFormat) {
   throw new Error(`Session format changed: expected ${baseline.harness.sessionFormat}, found ${format}`)
 }
-process.stdout.write(`upstream compatibility baseline accepted (${manifest.version}, session format ${String(format)})\n`)
+process.stdout.write(`upstream compatibility baseline accepted (${commit.slice(0, 7)}, ${manifest.version}, session format ${String(format)})\n`)
