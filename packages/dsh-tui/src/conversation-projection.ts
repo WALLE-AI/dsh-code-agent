@@ -7,8 +7,28 @@ import type {
   TranscriptNode,
 } from './contracts.ts'
 
-function eventFingerprint(event: TerminalEvent): string {
-  return JSON.stringify(event)
+/**
+ * Cheap structural fingerprint used for duplicate detection. A number keeps the
+ * per-event memory constant on very long logs, unlike a retained JSON copy.
+ */
+function eventFingerprint(event: TerminalEvent): number {
+  let hash = 0x811c9dc5
+  const mix = (value: string): void => {
+    for (let index = 0; index < value.length; index++) {
+      hash ^= value.charCodeAt(index)
+      hash = Math.imul(hash, 0x01000193)
+    }
+    hash ^= 0x5f
+  }
+  mix(event.kind)
+  mix(event.text)
+  mix(event.callId ?? '')
+  mix(event.messageId ?? '')
+  mix(event.name ?? '')
+  mix(event.parentCallId ?? '')
+  mix(event.failed === true ? '1' : '0')
+  if (event.metadata !== undefined) mix(JSON.stringify(event.metadata))
+  return hash >>> 0
 }
 
 function textId(event: TerminalEvent, kind: TextNode['kind']): string {
@@ -33,7 +53,11 @@ function freezeSnapshot(
 /** Deterministic, upstream-neutral fold shared by live delivery and session replay. */
 export class ConversationProjection {
   private nodes: TranscriptNode[] = []
-  private readonly fingerprints = new Map<number, string>()
+  private readonly fingerprints = new Map<number, number>()
+  /** node id -> index in `nodes`, so merging never scans the transcript. */
+  private readonly nodeIndex = new Map<string, number>()
+  /** Call ids still awaiting a result, so an interrupt never scans either. */
+  private readonly pendingTools = new Set<string>()
   private lastSeq: number | undefined
   private issue: ProjectionIssue | undefined
   private value: ConversationSnapshot = freezeSnapshot([], undefined)
@@ -77,7 +101,10 @@ export class ConversationProjection {
 
     this.fingerprints.set(event.seq, fingerprint)
     this.apply(event)
-    if (this.nodes.length > this.maxNodes) this.nodes = this.nodes.slice(-this.maxNodes)
+    if (this.nodes.length > this.maxNodes) {
+      this.nodes = this.nodes.slice(-this.maxNodes)
+      this.reindex()
+    }
     this.lastSeq = event.seq
     if (publish) this.value = freezeSnapshot(this.nodes, this.lastSeq)
     return true
@@ -86,6 +113,8 @@ export class ConversationProjection {
   rebuild(events: readonly TerminalEvent[]): ConversationSnapshot {
     this.nodes = []
     this.fingerprints.clear()
+    this.nodeIndex.clear()
+    this.pendingTools.clear()
     this.lastSeq = undefined
     this.issue = undefined
     this.value = freezeSnapshot([], undefined)
@@ -101,7 +130,7 @@ export class ConversationProjection {
     switch (event.kind) {
       case 'ignored': return
       case 'user':
-        this.nodes.push({
+        this.pushNode({
           id: textId(event, 'user'), kind: 'user', text: event.text,
           firstSeq: event.seq, lastSeq: event.seq,
         })
@@ -118,14 +147,14 @@ export class ConversationProjection {
         this.mergeToolResult(event)
         return
       case 'marker':
-        this.nodes.push({
+        this.pushNode({
           id: textId(event, 'marker'), kind: 'marker', text: event.text,
           firstSeq: event.seq, lastSeq: event.seq,
         })
         return
       case 'turn-end':
         this.interruptPendingTools(event.seq)
-        this.nodes.push({
+        this.pushNode({
           id: textId(event, 'turn'), kind: 'turn', text: event.text,
           firstSeq: event.seq, lastSeq: event.seq,
         })
@@ -139,27 +168,44 @@ export class ConversationProjection {
     let id = event.messageId === undefined
       ? this.findOpenTextId(kind)
       : textId(event, kind)
-    let index = id === undefined ? -1 : this.nodes.findIndex(node => node.id === id)
+    let index = this.indexOf(id)
     if (index === -1 && event.kind === 'assistant-final') {
       id = this.findOpenTextId(kind)
-      index = id === undefined ? -1 : this.nodes.findIndex(node => node.id === id)
+      index = this.indexOf(id)
     }
     if (index === -1) {
-      this.nodes.push({
+      this.pushNode({
         id: textId(event, kind), kind, text: event.text,
         firstSeq: event.seq, lastSeq: event.seq,
       })
       return
     }
     const current = this.nodes[index] as TextNode
+    const nextId = event.kind === 'assistant-final' && event.messageId !== undefined
+      ? textId(event, kind)
+      : current.id
     this.nodes[index] = {
       ...current,
-      id: event.kind === 'assistant-final' && event.messageId !== undefined
-        ? textId(event, kind)
-        : current.id,
+      id: nextId,
       text: event.kind === 'assistant-final' ? event.text : current.text + event.text,
       lastSeq: event.seq,
     }
+    if (nextId !== current.id) {
+      this.nodeIndex.delete(current.id)
+      this.nodeIndex.set(nextId, index)
+    }
+  }
+
+  /** Append one node and keep the id index in step. */
+  private pushNode(node: TranscriptNode): void {
+    this.nodeIndex.set(node.id, this.nodes.length)
+    this.nodes.push(node)
+  }
+
+  private indexOf(id: string | undefined): number {
+    if (id === undefined) return -1
+    const index = this.nodeIndex.get(id)
+    return index !== undefined && this.nodes[index]?.id === id ? index : -1
   }
 
   private findOpenTextId(kind: TextNode['kind']): string | undefined {
@@ -169,6 +215,16 @@ export class ConversationProjection {
       if (node?.kind === kind) return node.id
     }
     return undefined
+  }
+
+  /** Rebuild the id index after the bounded tail dropped leading nodes. */
+  private reindex(): void {
+    this.nodeIndex.clear()
+    this.pendingTools.clear()
+    this.nodes.forEach((node, index) => {
+      this.nodeIndex.set(node.id, index)
+      if (node.kind === 'tool' && node.status === 'pending') this.pendingTools.add(node.callId)
+    })
   }
 
   private mergeToolCall(event: TerminalEvent): void {
@@ -187,15 +243,18 @@ export class ConversationProjection {
       ...(event.parentCallId === undefined ? {} : { parentCallId: event.parentCallId }),
       ...(event.metadata === undefined ? {} : { metadata: event.metadata }),
     }
-    if (index === -1) this.nodes.push(call)
+    if (index === -1) this.pushNode(call)
     else this.nodes[index] = call
+    if (call.status === 'pending') this.pendingTools.add(callId)
+    else this.pendingTools.delete(callId)
   }
 
   private mergeToolResult(event: TerminalEvent): void {
     const callId = event.callId ?? `seq-${event.seq}`
     const index = this.findTool(callId)
+    this.pendingTools.delete(callId)
     if (index === -1) {
-      this.nodes.push({
+      this.pushNode({
         id: `tool:${callId}`, kind: 'tool', callId, name: event.name ?? 'unknown',
         input: '', output: event.text, status: event.failed === true ? 'failed' : 'succeeded',
         firstSeq: event.seq, lastSeq: event.seq,
@@ -214,13 +273,17 @@ export class ConversationProjection {
   }
 
   private findTool(callId: string): number {
-    return this.nodes.findIndex(node => node.kind === 'tool' && node.callId === callId)
+    return this.indexOf(`tool:${callId}`)
   }
 
   private interruptPendingTools(seq: number): void {
-    this.nodes = this.nodes.map(node => node.kind === 'tool' && node.status === 'pending'
-      ? { ...node, status: 'interrupted', lastSeq: seq }
-      : node)
+    for (const callId of this.pendingTools) {
+      const index = this.findTool(callId)
+      const node = index === -1 ? undefined : this.nodes[index]
+      if (node?.kind !== 'tool') continue
+      this.nodes[index] = { ...node, status: 'interrupted', lastSeq: seq }
+    }
+    this.pendingTools.clear()
   }
 
   private pause(issue: ProjectionIssue): true {

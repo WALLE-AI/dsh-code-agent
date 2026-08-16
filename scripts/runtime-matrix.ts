@@ -25,6 +25,9 @@ run('interactive 80x24', ['--import', 'tsx/esm', 'scripts/interactive-smoke.ts']
 run('interactive resize', ['--import', 'tsx/esm', 'scripts/interactive-smoke.ts', '--wide'])
 run('interactive question', ['--import', 'tsx/esm', 'scripts/interactive-smoke.ts', '--question'])
 run('interactive Unicode/IME', ['--import', 'tsx/esm', 'scripts/interactive-smoke.ts', '--unicode'])
+run('session resume', ['--import', 'tsx/esm', 'scripts/resume-smoke.ts'])
+run('cancellation', ['--import', 'tsx/esm', 'scripts/cancel-smoke.ts'])
+run('performance budgets', ['--expose-gc', '--import', 'tsx/esm', 'scripts/bench.ts'])
 run('quick soak', [
   '--import', 'tsx/esm', 'scripts/interactive-soak.ts',
   '--duration-ms', '10000', '--interval-ms', '500',

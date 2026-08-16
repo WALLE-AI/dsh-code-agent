@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { AgentInputRouter } from '../src/input-router.ts'
+import { AgentInputRouter, routeUserInput } from '../src/input-router.ts'
 import { presentTool } from '../src/tool-presentation.ts'
 import type { ToolNode } from '../src/contracts.ts'
 
@@ -21,6 +21,16 @@ describe('input routing', () => {
     await expect(router.submit('  /compact  ')).resolves.toMatchObject({ kind: 'command' })
     expect(followup).toHaveBeenCalledExactlyOnceWith('explain this')
     expect(executeCommand).toHaveBeenCalledWith('/compact', expect.any(AbortSignal))
+  })
+
+  it('steers a running Agent and follows up an idle one', () => {
+    expect(routeUserInput('running', 'also check the logs')).toBe('steer')
+    expect(routeUserInput('idle', 'also check the logs')).toBe('followup')
+    expect(routeUserInput('starting', 'also check the logs')).toBe('followup')
+    expect(routeUserInput(undefined, 'also check the logs')).toBe('followup')
+    // A slash command always reaches the command service, even mid-run.
+    expect(routeUserInput('running', '  /compact ')).toBe('command')
+    expect(routeUserInput('idle', '/compact')).toBe('command')
   })
 
   it('reports an unmatched slash command without sending it to the model', async () => {

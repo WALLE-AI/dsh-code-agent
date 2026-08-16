@@ -1098,7 +1098,10 @@ interface TuiConfig {
 - 2026-08-15 完成低高度行预算：布局按实际 header、transcript、modal/composer、notice/error 和 status 行数分配 viewport；低于 16 行时隐藏次要 detail/reason、将 option/command 窗口收缩为一行，空间继续不足时先移除 status/header。真实 80x12 Question PTY 完成结构化回答、follow-up、`/help`、`/quit` 与无色断言；纯布局测试覆盖 8 行复杂 modal，当前 strict TypeScript 与 55 项测试通过。
 - 2026-08-15 建立并跑通可重复的单会话 soak 门禁：`check:soak` 实际运行 30 分钟，持续复用同一 Agent，在 80x24、160x50、80x12 间轮换，共完成 352 次 follow-up 和 352 次 resize、354 次模型请求，处理约 1.31 MB PTY 输出；每轮 watchdog、整体期限、正常 `/quit` 和 alternate-screen 恢复断言均通过。驱动始终只保留 128 KiB 输出尾部。相同状态机的 10 秒 quick gate 已纳入常规 `check`。
 - 2026-08-15 完成 Node 22/24 runtime matrix：固定官方 Node v22.23.2，由同一 `process.execPath` 驱动 TypeScript、55 项测试、真实 profile、80x24 approval、160x50 resize/alternate-screen、80x12 Question/no-color 与 quick soak。Node 22 首轮暴露 Question PTY 在 Ink 重绘回调中立即写入会丢失的问题；改为画面检测后延迟 50ms 注入并清理 pending timer 后，完整矩阵通过。系统 Node v24.14.0 常规门禁保持通过。
-- 尚未完成：手工 Unicode 宽度/IME 与 SSH/tmux 矩阵。因此阶段 2 继续进行中。
+- 2026-08-16 关闭阶段 2 剩余项：新增 `terminal-text.ts` 统一清理 OSC/CSI/DCS、未终止转义、C0/C1/DEL 与双向覆盖字符，并按 East Asian/emoji/组合字符宽度做截断与换行；`terminal-capabilities.ts` 探测颜色等级、备用屏幕、超链接、tmux/screen、SSH 与旧版 Windows 控制台，并把每一次降级记录为显式 note。
+- 2026-08-16 修复此前一直失败的 `--unicode` PTY 场景：Ink 会剥掉每个输入块的前导 ESC，导致 bracketed paste 起始标记以 `[200~` 形式进入草稿。改为在任意位置移除两个标记后，真实 80x24 ConPTY 完成“中文宽字符 + emoji + 组合字符 + 第二行 IME 提交”的粘贴，不提前发送，并从下一次模型请求确认码点无损。
+- 2026-08-16 修正 composer 行预算：多行草稿按实际换行占用向 `terminalLayout` 申报行数（compact 下 1 行、否则最多 3 行，超出以 `…` 提示），状态行左右两侧按列宽截断，避免状态行折行破坏固定布局。
+- 阶段 2 退出条件已满足：80x24、160x50、80x12 三种尺寸的真实 PTY 场景、30 分钟耐久、Node 22/24 矩阵与 10,000 事件恢复全部通过。SSH/tmux 与 Linux/macOS 终端仿真器矩阵仍未人工执行，已按“未运行”记录在兼容矩阵中，不计为通过。
 
 ### 阶段 3：代码工具体验（第 5 至 6 周）
 
@@ -1114,6 +1117,17 @@ interface TuiConfig {
 
 退出条件：用户能在不离开 TUI 的情况下理解 Agent 读了什么、改了什么、命令是否成功、哪个文件可打开。
 
+#### 阶段 3 执行记录（2026-08-16）
+
+- 卡片一律由工具自己声明的 render intent 生成：`tool-card.ts` 消费 `presentCall`/`presentResult` 产出的 `generic`、`terminal`、`diff`、`search`、`read`、`web`，不按工具名分支；intent 缺失、未知或抛错时统一降级 generic，且异常不会影响 transcript。
+- terminal 卡片展示 command、cwd、description、`exit N`/`signal X`/`running`/`interrupted`，失败默认保留输出尾部；输出同时受行数与字节上限约束，超出部分显式标记为 `… N more line(s) not shown (output capped)`，10 MB 输出实测 12ms 且内存有界。
+- `diff-view.ts` 以带守卫的 LCS 生成带上下文的 unified hunk、行号、增删统计、新建文件与二进制提示；超过单元格上限时降级为整文件替换而不是阻塞渲染。
+- search（matches/paths 两种 shape）、read（行号窗口 + `showing N of M`）、web（sources/HTTP 状态）均有专用徽标与 location 输出。
+- `transcript-view.ts` 统一折叠策略：成功且较长的工具卡片默认折叠，失败保持展开，reasoning 默认折叠，Code Mode 子调用按 parent call id 缩进挂到父卡片下；`Ctrl+O` 折叠当前可见卡片，`Ctrl+E` 打开该卡片第一个 location。
+- `editor-launcher.ts` 先做 workspace 越界校验，再以 argv 数组启动编辑器，拒绝含 shell 语法的 `$EDITOR`，绝不拼接命令行；vim/code/idea/subl 等按各自的行号参数族生成。
+- `activity.ts` 从已注册 Session projection 折叠权限 preset、plan、todo、token、context 压力与子 Agent，写入状态行；TUI 不维护第二套任务状态。
+- 为避免每次事件重建全部卡片，`buildTranscriptEntries` 支持按节点签名缓存，仅重建发生变化的节点。
+
 ### 阶段 4：权限、恢复与故障处理（第 6 至 7 周）
 
 交付物：安全可恢复 beta。
@@ -1128,6 +1142,21 @@ interface TuiConfig {
 
 退出条件：故障注入矩阵全部通过；任何审批 transport 失败都不能执行受限工具；强制中断后终端可立即正常使用。
 
+#### 阶段 4 执行记录（2026-08-16）
+
+- 审批模态框改为绑定被审批的 tool call：adapter 透传 `callId`，UI 展示该卡片标题、首行摘要、asker 原因与当前 preset；仍然没有“始终允许”的快捷键。
+- 权限：`cordis.patch.yml` 显式补齐 `read-only` preset（默认表只有 workspace-write 与 danger-full-access）；切换仍只走官方 `/permission` 命令，切到 `danger-full-access` 必须连续发送两次，第一次只出警告。启动参数 `--permission` 在进入 raw mode 前校验，运行时通过官方命令写入，命令被拒即启动失败。
+- 恢复：`session-selector.ts` 只消费 `ctx.sessionQuery.listSessions()`，支持 `latest`、完整 id 与无歧义前缀，过滤 subagent 与不可达会话；`/sessions` 展示前 5 条。`executeHarnessTask` 支持 resume 分支、可选首任务与 preset 应用。`scripts/resume-smoke.ts` 用真实 Harness 跑通“新建 -> `/quit` -> `--resume latest` -> 展示旧 transcript -> follow-up -> 恢复历史进入下一次模型请求 -> exit 0”。
+- 关闭：`shutdown.ts` 把 quit、Esc/Ctrl+C、SIGINT/SIGTERM 与致命错误收敛为一次有序、精确一次的序列（停止输入 -> 未决交互结算为 unavailable -> cancel -> 有界等待 idle -> 交还给持有者 flush/dispose）；单步抛错不阻断后续步骤，超时只限制等待。`TerminalGuard` 在所有退出路径恢复光标、bracketed paste 与备用屏幕。
+- 退出码：完成且已持久化为 0；turn 非正常结束为 1；工作完成但最终 flush 失败或抛错为 74（并写诊断）；取消/信号为 130。flush 始终发生在 `AgentHandle.dispose()` 之前。
+- `render-boundary.tsx` 让单个渲染区域崩溃降级为一行错误提示，不影响 Agent；错误同时进入诊断日志。
+- `--diagnostic-log` 写脱敏 JSONL：凭据键值替换为 `[redacted]`，prompt/参数/内容/输出只保留形状摘要，深度、数组长度与字符串长度均有上限；绝不写交互 stdout，sink 失败只计数。
+- 故障注入矩阵（`tests/fault-injection.spec.ts`）覆盖：answerer 被拆除/abort/缺失、关闭时清空未决队列、flush 返回 false、flush 抛错、turn 非完成、preset 被拒或未知、必需服务缺失，共 7 组断言。
+- 组件级虚拟终端测试暴露并修复了一个真实缺陷：Ink 默认在第一次 Ctrl+C 就 unmount，会整体绕过受控关闭。改为 `exitOnCtrlC: false` 后，第一次只是武装确认、第二次才进入关闭序列；`scripts/cancel-smoke.ts` 用真实 PTY 断言 exit 130 与 `?1049l`/`?25h` 恢复。
+- 同一批组件测试还覆盖了计划点名的输入回归类型：双 Enter 只提交一次、单块 bracketed paste（含换行）不误提交且内容完整、审批按键不穿透到 composer。
+- 补齐 `Ctrl+P` 命令面板（过滤、上下选择、Enter 预填草稿而不是直接执行带参命令）、`Ctrl+R` 会话选择器与进程内 `/new`、`/resume`：当前会话先 flush/dispose，再挂载下一个会话；`check:resume` 已扩展为验证该链路，组件测试覆盖选择器的刷新与选中恢复。
+- 已知未做（如实记录）：`Tab` 焦点循环与 ≥120 列的右侧 activity 面板未实现，前者在当前单栏布局下无实际焦点目标，后者属于 P1；两者都不计为已完成。
+
 ### 阶段 5：性能、兼容与发布（第 8 至 10 周）
 
 交付物：`0.1.0` 可安装预览版。
@@ -1141,6 +1170,45 @@ interface TuiConfig {
 - 增加关键 keyless transcript snapshot；真实 provider e2e 仅作为补充。
 
 退出条件：发布门禁全部通过，安装后首次启动不要求源码仓库，不污染 stdout，升级/卸载不删除用户 sessions/settings。
+
+#### 阶段 5 执行记录（2026-08-16）
+
+- `scripts/bench.ts` 建立可复跑的性能门禁并暴露了两处真实缺陷：投影对每个 tool 配对、文本归并和 turn 结束都做全量线性扫描，且为每个事件保留一份 JSON 指纹。改为 id 索引 + 未决调用集合 + 数值指纹后，100k 事件重建从约 50s 降到 0.32s，10k 从 314ms 降到 40ms，10k 稳态 RSS 为 99.6MB（预算 200MB）。10 MB 输出 12ms、100 个乱序并发调用 21ms。
+- 产物边界：新增 `tsconfig.build.json` 生成 `lib/*.js` 与 `lib/types/*.d.ts`（相对 `.ts` 说明符改写为 `.js`）；package `exports` 默认解析 `lib`，开发链路通过 `--conditions=development` 解析 `src`。`scripts/packed-install-smoke.ts` 打包 tarball、在仓库外解包、校验 `files`/`exports` 完整性，并用真实 profile 启动（help + 非 TTY 拒绝）。
+- adapter 的上游加载改为“先解析已安装包，再回退到固定源码 checkout”，使已安装形态不再依赖 monorepo 路径。
+- `scripts/release-gate.ts`（`npm run check:release`）把静态不变量（不得直接依赖或 import Cordis）、上游 tuple 与服务契约、严格 typecheck、测试、真实 profile、PTY 矩阵、恢复、性能预算、打包安装与耐久 soak 串成一条门禁；`--fast` 只跳过慢门禁并明确声明该次运行不可发布。
+- `tests/isolation.spec.ts` 改为扫描全部源码：仅 adapter 允许出现 checkout 路径或 `@deepseek-ai/*` import，非 `.tsx` 模块不得 import React/Ink。
+- `check-upstream.ts` 的契约集合扩展到 12 项，新增 agents.resume、sessionQuery.listSessions、SessionRecord 形状、ApprovalRequest 形状、userQuestions.registerProvider、permission-presets 配置与 tool render-intent 词表。
+- 交付文档：`docs/tui-user-guide.md`（安装、参数、键位、权限、恢复、退出码、诊断、平台级别）、`CHANGELOG.md`（含完整上游 tuple 与已知限制）、`docs/phase-0-compatibility-matrix.md`（逐项证据，并把未运行项如实标注为 Not run）、bash/zsh/fish 补全及其漂移测试与真实 bash 补全探针。
+- 补齐 INT-02 的 steer 语义：普通文本在 Agent running 时直接 `steer()` 并提示“queued for the current step”，不再排到提交队列后面变成普通 follow-up；idle 时仍走 followup 并等待 idle+flush。路由决策抽成纯函数以便单测。
+- Node 22 矩阵暴露真实的测试驱动缺陷：在 Ink 重绘期间写入的按键会被丢弃，且 Ink 每帧重绘整屏会让“旧文本”看起来像新响应。PTY 驱动改为按步骤重发直到回显出现，并以模型请求计数（而非屏幕文本）判定新响应；随后 Node 22 全矩阵通过。
+- 2026-08-16 全量 `npm run check:release` 十项门禁全绿。
+#### 阶段 5 补充执行记录（2026-08-16，第二轮）
+
+- 补齐 `REC-04` 的 EOF：stdin `end`/`close` 进入同一条有界关闭序列，并在组合层用注入的 stdin 验证。
+- 新增 `plugin.spec.ts` 组合层测试（13 项）：以真实 plugin/store/队列/controller/adapter + 替换渲染器，覆盖启动拒绝、退出码 0/1/74/130、取消、SIGTERM、stdin EOF、监听器归零、`/new`、选择器恢复、danger preset 二次确认与 steer。
+- 补齐 `UI-02` 历史分段换入：窗口先渲染 `maxEvents` 个节点，PgUp 抵达最旧行时按页换入保留的历史（受 retention 上限约束）；换入的历史保持视口锚点且不计入未读。
+- 补齐 `UI-04` 的 `Tab` 焦点循环：transcript 焦点下 `j/k`、方向键滚动，`Enter`/`Tab` 回到输入，导航键不会写入草稿。
+- 补齐 `QA-01` property test：引入 fast-check，对生成的事件日志验证 seed/live 相等、重复投递幂等、跳号暂停、工具配对、保留上限；对任意二进制字符串验证清理后无转义/控制字符、截断与换行不超列宽、清理幂等。该组 property 直接发现并修复了一个真实缺陷：单个字形宽于整行时换行会溢出一格（1 列终端显示宽字符）。
+- 真实安装暴露另一个打包缺陷：peerDependencies 固定了尚未发布的版本，导致 `pnpm install` 直接失败。改为可选 peer 范围（profile 提供这些包，不应阻断安装）。
+- 第二轮结束：`check:release` 十项门禁与 Node 22 矩阵均通过，测试总数 160。
+
+#### 真实 API 验证记录（2026-08-16）
+
+凭据与 base URL 从 `.env`（或进程环境）读取，脚本不打印密钥值。
+
+- `check:real`：真实 profile 通过 `https://api.deepseek.com` 流式回答，持久化的 request header 证明实际选择为 `deepseek-official` / `deepseek-v4-pro` / `high`。
+- `check:real:interactive`：真实模型调用 `read` 工具读取 package.json、作答、接受 composer follow-up、完成第二轮，`/quit` 退出 0；会话日志含 2 条 user message、2 个 turn/end 与该工具调用。
+- `check:real:approval`：`--permission read-only` 下，真实模型的写入先被 sandbox 拒绝（`exit 1`），随后带 `sandbox_permissions: workspace-write` 重试，TUI 弹出 `Approve pwsh? (read-only) [y/N]` 并显示关联卡片与原因；批准后命令 `exit 0`、文件生成、`approval/decided` 落盘、状态行显示 `approvals 1`。
+- 真实运行发现并修复了一个真实缺陷：`--permission` 与 `--model` 虽已解析校验，却没有映射进 profile patch 的 plugin config，导致两个参数被静默忽略（首次真实运行时状态行仍显示 `workspace-write`）。
+- 真实运行还顺带验证了 provider 错误行：`reasoningEffort` 不受支持时，transcript 显示 `── turn error: UNSUPPORTED_REASONING_EFFORT …` 并以非零码退出。
+- 这两个真实 API 门禁属于 opt-in，不进入默认 `check`（需要密钥与网络）。
+
+- 逐条对照 8.2 WBS 后，如实登记以下未完成项（均已写入兼容矩阵的 Still open）：
+  - `BOOT-03`/`REL-02` 内置 profile 注册：与 ADR 0001「上游 checkout 只读」冲突，故意不做，改用外置 bundle；正式发布仍需上游补该 profile 模板条目。
+  - `TOOL-08` 的右侧 activity 面板（P1）：同源数据已投影到状态行。
+  - `REC-04` 的 EOF：已在组合层用注入 stdin 覆盖；`node-pty` 无法在不杀进程的前提下关闭子进程 stdin，因此没有 PTY 级用例。
+  - SSH/tmux 人工矩阵、Linux/macOS PTY 与终端仿真器矩阵、基于已发布 Harness 的完整依赖闭包安装：未运行。
 
 ## 8. 任务分解与优先级
 

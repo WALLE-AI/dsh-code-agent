@@ -6,8 +6,13 @@ export interface ComposerState {
 
 export const emptyComposer: ComposerState = Object.freeze({ draft: '', history: [], historyIndex: -1 })
 
+// Ink strips a leading ESC from every chunk, so the opening bracketed-paste
+// marker can arrive without it. Both markers are removed wherever they occur:
+// a long paste may also be split across chunks.
+const PASTE_MARKER = new RegExp(`${String.fromCharCode(27)}?${String.raw`\[20[01]~`}`, 'g')
+
 function pasteText(text: string): string {
-  return text.replace(/^\u001B\[200~/, '').replace(/\u001B\[201~$/, '')
+  return text.replace(PASTE_MARKER, '')
 }
 
 export function insertComposer(state: ComposerState, text: string): ComposerState {

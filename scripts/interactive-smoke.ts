@@ -14,6 +14,9 @@ const followupText = unicodeScenario ? unicodeFollowup : 'follow-up from compose
 const followupWire = unicodeScenario
   ? `\u001B[200~${unicodeFollowup}\u001B[201~`
   : followupText
+const normalizeScreen = (value: string): string => value
+  .replace(/\[[0-?]*[ -/]*[@-~]/g, '')
+  .replace(/\s+/g, '')
 const terminalSize = wide
   ? { cols: 160, rows: 50 }
   : questionScenario ? { cols: 80, rows: 12 } : { cols: 80, rows: 24 }
@@ -99,7 +102,7 @@ const writeSoon = (data: string): void => {
   pendingWrites.add(timer)
 }
 const child = ptyModule.spawn(process.execPath, [
-  '--import', 'tsx/esm', 'apps/cli/src/bin.ts', '--profile', 'tui', '--interactive',
+  '--import', 'tsx/esm', '--conditions=development', 'apps/cli/src/bin.ts', '--profile', 'tui', '--interactive',
   ...(wide ? ['--alternate-screen'] : []),
   ...(questionScenario ? ['--no-color'] : []),
   'run the phase zero interactive smoke',
@@ -155,7 +158,10 @@ const dataSubscription = child.onData((data) => {
     followupRequestBaseline = server.requests.length
     writeSoon(followupWire)
   }
-  if (followupSent && !followupEnterSent && transcript.includes(followupText)) {
+  // The composer wraps a multi-line draft across rows, so the echo is compared
+  // with terminal escapes and layout whitespace removed.
+  if (followupSent && !followupEnterSent
+    && normalizeScreen(transcript.slice(followupOffset)).includes(normalizeScreen(followupText))) {
     if (unicodeScenario && server.requests.length > followupRequestBaseline) prematureUnicodeSubmit = true
     followupEnterSent = true
     child.write('\r')
@@ -194,7 +200,9 @@ const finished = new Promise<number>((resolveExit, reject) => {
   const timer = setTimeout(() => {
     closePty()
     reject(new Error(`interactive TUI smoke timed out\n${transcript.slice(-8000)}`))
-  }, 30_000)
+  // Booting the Harness through tsx can take tens of seconds when several gate
+  // steps contend for the machine; this budget covers the whole scenario.
+  }, 90_000)
   exitSubscription = child.onExit(({ exitCode }) => {
     clearTimeout(timer)
     resolveExit(exitCode)

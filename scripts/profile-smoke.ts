@@ -19,7 +19,7 @@ writeFileSync(join(profile, 'package.json'), JSON.stringify({
 if (!existsSync(join(profile, 'cordis.patch.yml'))) writeFileSync(join(profile, 'cordis.patch.yml'), '[]\n')
 
 function run(args: string[]): { status: number | null; stdout: string; stderr: string } {
-  const result = spawnSync(process.execPath, ['--import', 'tsx/esm', 'apps/cli/src/bin.ts', '--profile', 'tui', ...args], {
+  const result = spawnSync(process.execPath, ['--import', 'tsx/esm', '--conditions=development', 'apps/cli/src/bin.ts', '--profile', 'tui', ...args], {
     cwd: harness,
     env: { ...process.env, DSH_HOME: home },
     encoding: 'utf8',

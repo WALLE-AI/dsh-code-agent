@@ -9,18 +9,27 @@ export interface TerminalLayoutInput {
     customVisible: boolean
   }
   commandCount: number
+  /** Open list modal (command palette or session picker) and its entry count. */
+  listModal?: { count: number }
   notice: boolean
   error: boolean
+  /** Rows the multi-line composer needs; clamped to the policy maximum. */
+  composerRows?: number
 }
 
 export interface TerminalLayoutPolicy {
   compact: boolean
   commandLimit: number
   optionWindowSize: number
+  composerRowLimit: number
+  /** Rows one list modal may use for its entries. */
+  paletteLimit: number
 }
 
 export interface TerminalLayout extends TerminalLayoutPolicy {
   viewportRows: number
+  /** Composer rows the frame actually reserved. */
+  composerRows: number
   showHeader: boolean
   showStatus: boolean
   showNotice: boolean
@@ -34,12 +43,15 @@ export function terminalLayoutPolicy(rows: number): TerminalLayoutPolicy {
     compact,
     commandLimit: compact ? 1 : 3,
     optionWindowSize: compact ? 1 : 5,
+    composerRowLimit: compact ? 1 : 3,
+    paletteLimit: compact ? 2 : 6,
   }
 }
 
 export function terminalLayout(input: TerminalLayoutInput): TerminalLayout {
   const rows = Math.max(1, Math.floor(input.rows))
   const policy = terminalLayoutPolicy(rows)
+  const composerRows = Math.max(1, Math.min(policy.composerRowLimit, input.composerRows ?? 1))
   let showHeader = true
   let showStatus = true
   let showNotice = input.notice && !(policy.compact && input.error)
@@ -55,8 +67,10 @@ export function terminalLayout(input: TerminalLayoutInput): TerminalLayout {
       total += 3 + Number(showQuestionDetail)
         + Math.min(input.question.optionCount, policy.optionWindowSize)
         + Number(input.question.customVisible)
+    } else if (input.listModal !== undefined) {
+      total += 2 + Math.min(input.listModal.count, policy.paletteLimit)
     } else if (input.interactive) {
-      total += 2 + Math.min(input.commandCount, policy.commandLimit)
+      total += 1 + composerRows + Math.min(input.commandCount, policy.commandLimit)
     }
     total += Number(showNotice) + Number(input.error)
     return total
@@ -69,6 +83,7 @@ export function terminalLayout(input: TerminalLayoutInput): TerminalLayout {
 
   return {
     ...policy,
+    composerRows,
     viewportRows: Math.max(1, rows - fixedRows()),
     showHeader,
     showStatus,

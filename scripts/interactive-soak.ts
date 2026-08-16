@@ -68,7 +68,7 @@ const server = await startMockLlmServer({
 })
 
 const child = ptyModule.spawn(process.execPath, [
-  '--import', 'tsx/esm', 'apps/cli/src/bin.ts', '--profile', 'tui',
+  '--import', 'tsx/esm', '--conditions=development', 'apps/cli/src/bin.ts', '--profile', 'tui',
   '--interactive', '--alternate-screen', 'start the phase two soak',
 ], {
   cwd: harness,

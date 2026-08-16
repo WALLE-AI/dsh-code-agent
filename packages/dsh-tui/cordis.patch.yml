@@ -1,7 +1,29 @@
-# Phase-zero terminal surface. The Harness base bundle remains the owner of
+# Terminal surface overlay. The Harness base bundle remains the owner of
 # Agent, persistence, tools, policy, sandbox, and model services.
 - id: hmr
   disabled: true
+
+# The default table ships only workspace-write and danger-full-access. The TUI
+# promises a read-only mode, so it must add that preset explicitly.
+- id: permission-presets
+  config:
+    defaultPreset: workspace-write
+    presets:
+      read-only:
+        sandbox: read-only
+        approval: ask
+        name: read-only
+        description: Read workspace files; writes and commands require approval or a preset change.
+      workspace-write:
+        sandbox: workspace-write
+        approval: ask
+        name: workspace-write
+        description: Write inside the workspace and permitted temporary directories; wider access requires approval.
+      danger-full-access:
+        sandbox: danger-full-access
+        approval: never
+        name: danger-full-access
+        description: Full file access without approval prompts.
 
 - insert:
     - id: tui-startup
@@ -12,7 +34,11 @@
       inject: [tuiStartup]
       config:
         task: !!js ctx.tuiStartup.task
+        resume: !!js ctx.tuiStartup.resume
+        permission: !!js ctx.tuiStartup.permission
+        model: !!js ctx.tuiStartup.model
         alternateScreen: !!js ctx.tuiStartup.alternateScreen
         interactive: !!js ctx.tuiStartup.interactive
         color: !!js ctx.tuiStartup.color
+        diagnosticLog: !!js ctx.tuiStartup.diagnosticLog
         maxEvents: 200

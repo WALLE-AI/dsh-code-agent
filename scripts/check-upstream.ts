@@ -26,6 +26,37 @@ const contracts: [string, RegExp, string][] = [
   ['packages/core/session/src/index.ts', /flush\(session: Session\): Promise<boolean>/, 'sessions.flush'],
   ['packages/interaction/user-approval/src/index.ts', /'approval\/request'/, 'approval/request'],
   ['packages/boot/cmdline/src/index.ts', /interface CmdlineArgs[\s\S]*get\(\): readonly string\[\]/, 'cmdlineArgs'],
+  ['packages/core/agent/src/index.ts', /async resume\(options: ResumeAgentOptions\): Promise<AgentHandle>/, 'agents.resume'],
+  [
+    'packages/session-query/session-query/src/index.ts',
+    /listSessions\(signal\?: AbortSignal\): Promise<SessionRecord\[\]>/,
+    'sessionQuery.listSessions',
+  ],
+  [
+    'packages/session-query/session-query/src/types.ts',
+    /interface SessionRecord[\s\S]*header: SessionHeader[\s\S]*live: boolean[\s\S]*persisted: boolean/,
+    'SessionRecord shape',
+  ],
+  [
+    'packages/interaction/permission-presets/src/index.ts',
+    /presets: z\.dict[\s\S]*defaultPreset: z\.string\(\)/,
+    'permission-presets config',
+  ],
+  [
+    'packages/interaction/user-questions/src/index.ts',
+    /registerProvider/,
+    'userQuestions.registerProvider',
+  ],
+  [
+    'packages/core/tools/src/presentation.ts',
+    /card: 'generic'[\s\S]*card: 'terminal'[\s\S]*card: 'diff'[\s\S]*card: 'search'[\s\S]*card: 'read'[\s\S]*card: 'web'/,
+    'tool render-intent vocabulary',
+  ],
+  [
+    'packages/interaction/user-approval/src/index.ts',
+    /interface ApprovalRequest[\s\S]*readonly toolName: string[\s\S]*readonly callId\?: CallId/,
+    'ApprovalRequest shape',
+  ],
 ]
 for (const [file, pattern, contract] of contracts) {
   if (!pattern.test(readFileSync(join(harness, file), 'utf8'))) throw new Error(`Harness contract changed: ${contract} in ${file}`)

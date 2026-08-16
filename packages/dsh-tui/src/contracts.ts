@@ -1,5 +1,13 @@
 /** Upstream-neutral types shared by the runtime projection and Ink view. */
 
+import type { ActivityCounters, ActivitySummary } from './activity.ts'
+import type { TuiSessionSummary } from './session-selector.ts'
+import type { TranscriptEntry, TranscriptLine } from './transcript-view.ts'
+
+export type {
+  ActivityCounters, ActivitySummary, TranscriptEntry, TranscriptLine, TuiSessionSummary,
+}
+
 export type AgentStatus = 'idle' | 'running' | 'closing' | 'starting'
 
 export type AgentCancelCause =
@@ -76,6 +84,8 @@ export interface ApprovalPrompt {
   id: number
   toolName: string
   reason?: string
+  /** The streamed tool call this decision belongs to, when the asker has one. */
+  callId?: string
 }
 
 export interface TuiCommandDescriptor {
@@ -140,9 +150,16 @@ export interface TuiSnapshot {
   interactive: boolean
   transcriptRevision: number
   nodes: readonly TranscriptNode[]
-  lines: readonly string[]
+  entries: readonly TranscriptEntry[]
+  lines: readonly TranscriptLine[]
   commands: readonly TuiCommandDescriptor[]
   registeredProjections: RegisteredProjectionSnapshot
+  activity: ActivitySummary
+  counters: ActivityCounters
+  /** Resume candidates, refreshed on demand by the session picker. */
+  sessions: readonly TuiSessionSummary[]
+  /** True when retained history exists above the rendered window. */
+  hasMoreHistory: boolean
   approval?: ApprovalPrompt
   question?: QuestionPrompt
   error?: string
@@ -154,6 +171,14 @@ export interface TuiActions {
   decideApproval(allowed: boolean): void
   answerQuestion(answer: QuestionAnswer): void
   submit(text: string): void
+  toggleFold(entryId: string): void
+  openLocation(location: { readonly path: string; readonly line?: number }): void
+  /** Page one more screen of retained history into the transcript window. */
+  expandTranscript(): void
+  /** Refresh the resume candidates into the store. */
+  listSessions(): void
+  /** Settle the current session and attach the selected one. */
+  resumeSession(sessionId: string): void
 }
 
 export interface TuiView {

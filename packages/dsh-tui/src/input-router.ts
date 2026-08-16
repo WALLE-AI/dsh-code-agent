@@ -1,4 +1,16 @@
-import type { InputSubmission, TuiCommandExecution } from './contracts.ts'
+import type { AgentStatus, InputSubmission, TuiCommandExecution } from './contracts.ts'
+
+export type InputRoute = 'command' | 'steer' | 'followup'
+
+/**
+ * Decide where one submission goes. A message typed while the Agent is running
+ * steers the live run instead of queueing behind it; a slash command always
+ * goes through the Harness command service.
+ */
+export function routeUserInput(status: AgentStatus | undefined, text: string): InputRoute {
+  if (text.trim().startsWith('/')) return 'command'
+  return status === 'running' ? 'steer' : 'followup'
+}
 
 export interface InputRouterPort {
   followup(text: string): void

@@ -11,12 +11,34 @@ import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, extname, join, resolve } from 'node:path'
 
-const apiKey = process.env.DEEPSEEK_API_KEY
-if (apiKey === undefined || apiKey.trim().length === 0) {
-  throw new Error('check:real requires DEEPSEEK_API_KEY in the launching environment')
+const root = resolve(import.meta.dirname, '..')
+
+/**
+ * Read `DEEPSEEK_*` entries from a local `.env` as a fallback for the launching
+ * environment. Values are never logged; only their presence is reported.
+ */
+function localEnv(): Record<string, string> {
+  const file = join(root, '.env')
+  if (!existsSync(file)) return {}
+  const values: Record<string, string> = {}
+  for (const line of readFileSync(file, 'utf8').split(/\r?\n/)) {
+    const match = /^\s*(DEEPSEEK_[A-Z0-9_]+)\s*=\s*(.*)$/.exec(line)
+    if (match === null) continue
+    values[match[1] as string] = (match[2] as string).trim().replace(/^["']|["']$/g, '')
+  }
+  return values
 }
 
-const root = resolve(import.meta.dirname, '..')
+const dotenv = localEnv()
+const apiKey = process.env.DEEPSEEK_API_KEY ?? dotenv.DEEPSEEK_API_KEY
+if (apiKey === undefined || apiKey.trim().length === 0) {
+  throw new Error('check:real requires DEEPSEEK_API_KEY in the environment or in .env')
+}
+const baseURL = process.env.DEEPSEEK_BASE_URL
+  ?? dotenv.DEEPSEEK_BASE_URL
+  ?? process.env.DEEPSEEK_URL
+  ?? dotenv.DEEPSEEK_URL
+  ?? 'https://api.deepseek.com'
 const harness = join(root, 'opensource/deepseek-harness')
 const ptyModule = await import('node-pty') as {
   spawn(file: string, args: string[], options: Record<string, unknown>): {
@@ -49,7 +71,7 @@ writeFileSync(join(home, 'settings.yaml'), [
   '  model: deepseek-v4-pro',
   '  reasoningEffort: high',
   'llm-deepseek:',
-  '  baseURL: https://api.deepseek.com',
+  `  baseURL: ${baseURL}`,
   '  thinking: enabled',
   '  reasoningEffort: high',
   '',
@@ -57,7 +79,7 @@ writeFileSync(join(home, 'settings.yaml'), [
 
 let transcript = ''
 const child = ptyModule.spawn(process.execPath, [
-  '--import', 'tsx/esm', 'apps/cli/src/bin.ts', '--profile', 'tui',
+  '--import', 'tsx/esm', '--conditions=development', 'apps/cli/src/bin.ts', '--profile', 'tui',
   'Reply with exactly REAL_TUI_OK and do not call tools.',
 ], {
   cwd: harness,
@@ -69,7 +91,7 @@ const child = ptyModule.spawn(process.execPath, [
     DSH_HOME: home,
     DSH_TELEMETRY_DISABLED: '1',
     DEEPSEEK_API_KEY: apiKey,
-    DEEPSEEK_BASE_URL: 'https://api.deepseek.com',
+    DEEPSEEK_BASE_URL: baseURL,
   },
 })
 
@@ -129,7 +151,9 @@ try {
     throw new Error(`unexpected persisted model selection: ${JSON.stringify(config)}`)
   }
 
-  process.stdout.write('real Harness TUI API smoke accepted (deepseek-v4-pro + thinking/high + streamed response)\n')
+  process.stdout.write(
+    `real Harness TUI API smoke accepted (${baseURL}, deepseek-v4-pro + thinking/high + streamed response)\n`,
+  )
 } finally {
   dataSubscription.dispose()
   exitSubscription?.dispose()

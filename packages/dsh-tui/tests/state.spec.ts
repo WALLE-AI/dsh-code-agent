@@ -8,8 +8,9 @@ describe('phase-zero terminal state', () => {
     const store = new TuiStore(2)
     store.append({ seq: 1, kind: 'user', text: 'one' })
     store.append({ seq: 2, kind: 'assistant-delta', text: 'two' })
-    store.append({ seq: 3, kind: 'tool-call', text: 'three' })
-    expect(store.snapshot().lines).toEqual(['two', 'Tool: three'])
+    store.append({ seq: 3, kind: 'tool-call', text: 'three', name: 'bash', callId: 'c1' })
+    expect(store.snapshot().lines.map(line => line.text))
+      .toEqual(['two', '▸ bash  [running]', '  three'])
   })
 
   it('publishes reference-stable snapshots only when state changes', () => {
@@ -40,6 +41,40 @@ describe('phase-zero terminal state', () => {
     expect(store.snapshot().commands).toEqual([{ name: 'compact', description: 'Compact context' }])
   })
 
+  it('pages retained history into the window without marking it unread', () => {
+    const store = new TuiStore(2, {}, 10)
+    for (let seq = 0; seq < 8; seq++) {
+      store.append({ seq, kind: 'user', text: `line-${String(seq)}` })
+    }
+    expect(store.snapshot().lines.map(line => line.text)).toEqual(['> line-6', '> line-7'])
+    expect(store.snapshot().hasMoreHistory).toBe(true)
+
+    const revision = store.snapshot().transcriptRevision
+    expect(store.expandWindow()).toBe(true)
+    expect(store.snapshot().lines.map(line => line.text))
+      .toEqual(['> line-4', '> line-5', '> line-6', '> line-7'])
+    // Prepending history is not new content, so the viewport keeps its anchor.
+    expect(store.snapshot().transcriptRevision).toBe(revision)
+
+    store.expandWindow()
+    store.expandWindow()
+    expect(store.snapshot().lines).toHaveLength(8)
+    expect(store.snapshot().hasMoreHistory).toBe(false)
+    expect(store.expandWindow()).toBe(false)
+  })
+
+  it('drops history beyond the retention bound instead of growing forever', () => {
+    const store = new TuiStore(2, {}, 4)
+    for (let seq = 0; seq < 20; seq++) {
+      store.append({ seq, kind: 'user', text: `line-${String(seq)}` })
+    }
+    store.expandWindow()
+    store.expandWindow()
+    expect(store.snapshot().lines.map(line => line.text))
+      .toEqual(['> line-16', '> line-17', '> line-18', '> line-19'])
+    expect(store.snapshot().hasMoreHistory).toBe(false)
+  })
+
   it('rebuilds and bounds a 10000-event transcript', () => {
     const store = new TuiStore(10_000)
     const events = Array.from({ length: 10_000 }, (_, seq) => ({
@@ -50,7 +85,7 @@ describe('phase-zero terminal state', () => {
     expect(store.rebuild(events)).toBeUndefined()
     expect(store.snapshot()).toMatchObject({ transcriptRevision: 1 })
     expect(store.snapshot().lines).toHaveLength(10_000)
-    expect(store.snapshot().lines.at(-1)).toBe('You: line-9999')
+    expect(store.snapshot().lines.at(-1)?.text).toBe('> line-9999')
   })
 })
 

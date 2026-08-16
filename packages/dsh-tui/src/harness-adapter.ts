@@ -14,9 +14,12 @@ import type {
   QuestionItem,
   RegisteredProjectionSnapshot,
   TerminalEvent,
+  ToolNode,
+  ToolPresentation,
   TuiCommandDescriptor,
   TuiCommandExecution,
 } from './contracts.ts'
+import type { TuiSessionSummary } from './session-selector.ts'
 import { presentTool } from './tool-presentation.ts'
 
 interface HarnessContext {
@@ -79,13 +82,51 @@ export interface HarnessHooks {
   rebuild(events: readonly TerminalEvent[]): ProjectionIssue | undefined
   projection(snapshot: RegisteredProjectionSnapshot): void
   status(status: AgentStatus): void
-  approval(input: { toolName: string; reason?: string }, signal?: AbortSignal): Promise<ApprovalDecision>
+  approval(
+    input: { toolName: string; reason?: string; callId?: string },
+    signal?: AbortSignal,
+  ): Promise<ApprovalDecision>
   question(questions: readonly QuestionItem[], signal?: AbortSignal): Promise<QuestionAnswer>
-  ready(cancel: () => void): void
+  /** Report a diagnosable runtime fault that the user must see. */
+  diagnostic(message: string): void
+  ready(controls: TuiSessionControls): void
 }
+
+/** Live capabilities handed to the view once the Agent is attached. */
+export interface TuiSessionControls {
+  cancel(): void
+  whenIdle(): Promise<void>
+  presentTool(node: ToolNode): ToolPresentation
+}
+
+/** Exit code used when the session could not be made durable before exit. */
+export const NOT_DURABLE_EXIT_CODE = 74
 
 function upstream(relative: string): string {
   return new URL(`../../../opensource/deepseek-harness/${relative}`, import.meta.url).href
+}
+
+/**
+ * Resolve one upstream module. An installed profile resolves the published
+ * package; the pinned source checkout is the development fallback, so both
+ * layouts load the same module instance the running Agent uses.
+ */
+async function loadUpstreamModule(
+  specifier: string,
+  sourcePath: string,
+): Promise<Record<string, unknown>> {
+  try {
+    return await import(specifier) as Record<string, unknown>
+  } catch (error) {
+    try {
+      return await import(upstream(sourcePath)) as Record<string, unknown>
+    } catch (fallbackError) {
+      throw new AggregateError(
+        [error, fallbackError],
+        `cannot load upstream module ${specifier}; neither the installed package nor the pinned checkout resolved`,
+      )
+    }
+  }
 }
 
 async function loadRuntime(): Promise<{
@@ -95,10 +136,10 @@ async function loadRuntime(): Promise<{
   knownSessionEventTypes: ReadonlySet<string>
 }> {
   const [agent, llm, session] = await Promise.all([
-    import(upstream('packages/core/agent/src/index.ts')),
-    import(upstream('packages/llm/llm/src/index.ts')),
-    import(upstream('packages/core/session/src/index.ts')),
-  ])
+    loadUpstreamModule('@deepseek-ai/dsh-agent', 'packages/core/agent/src/index.ts'),
+    loadUpstreamModule('@deepseek-ai/dsh-llm', 'packages/llm/llm/src/index.ts'),
+    loadUpstreamModule('@deepseek-ai/dsh-session', 'packages/core/session/src/index.ts'),
+  ]) as [Record<string, any>, Record<string, any>, Record<string, any>]
   return {
     installModelSelection: agent.installModelSelection,
     createUserMessage: llm.createUserMessage,
@@ -317,13 +358,20 @@ function setupAgent(
     })
     agentCtx.on('agent/status', ({ status }: { status: AgentStatus }) => { hooks.status(status) })
     agentCtx.on('approval/request', (
-      request: { agent: AgentLike; toolName: string; reason?: string; signal?: AbortSignal },
+      request: {
+        agent: AgentLike
+        toolName: string
+        reason?: string
+        callId?: string
+        signal?: AbortSignal
+      },
       next: () => Promise<ApprovalDecision>,
     ) => {
       if (agentCtx.agent === undefined || request.agent !== agentCtx.agent) return next()
       return hooks.approval({
         toolName: request.toolName,
         ...(request.reason === undefined ? {} : { reason: request.reason }),
+        ...(request.callId === undefined ? {} : { callId: request.callId }),
       }, request.signal)
     })
   }
@@ -400,16 +448,24 @@ async function controlledHandle(
   }
 }
 
+/** A `--model` override applied to this run only; the stored default is untouched. */
+export interface ModelOverride {
+  readonly provider?: string
+  readonly model?: string
+  readonly reasoningEffort?: string
+}
+
 /** Create a reusable upstream-neutral controller backed by the live Harness services. */
 export async function createHarnessAgentController(
   ctx: HarnessContext,
   hooks: HarnessHooks,
+  override?: ModelOverride,
 ): Promise<AgentController> {
   const loader = ctx.get('loader') as { await(): Promise<void> } | undefined
   await loader?.await()
   const harnessServices = services(ctx)
   const runtime = await loadRuntime()
-  const selection = harnessServices.defaultModel.currentSelection()
+  const selection = { ...harnessServices.defaultModel.currentSelection(), ...override }
   const setup = setupAgent(runtime, selection, hooks)
   const options = (identity: Record<string, unknown>): Record<string, unknown> => ({
     ...identity,
@@ -428,33 +484,101 @@ export async function createHarnessAgentController(
   return new AgentController(port)
 }
 
-/** Drive one task using public Harness services and retain ownership until durable teardown. */
+/** List the sessions the resume selector may offer, via the official query service. */
+export async function listHarnessSessions(
+  ctx: HarnessContext,
+  signal?: AbortSignal,
+): Promise<readonly TuiSessionSummary[]> {
+  const query = ctx.get('sessionQuery') as {
+    listSessions(signal?: AbortSignal): Promise<readonly {
+      header: { id: string; createdAt: number; cwd?: string; origin?: string }
+      live: boolean
+      persisted: boolean
+    }[]>
+  } | undefined
+  if (query === undefined) throw new Error('Harness sessionQuery service is missing; cannot list sessions')
+  const records = await query.listSessions(signal)
+  return records.map(record => ({
+    id: String(record.header.id),
+    createdAt: record.header.createdAt,
+    live: record.live,
+    persisted: record.persisted,
+    ...(record.header.cwd === undefined ? {} : { cwd: record.header.cwd }),
+    ...(record.header.origin === undefined ? {} : { origin: record.header.origin }),
+  }))
+}
+
+/** One TUI run: a new or resumed session, an optional preset, and an optional first task. */
+export interface HarnessRunRequest {
+  readonly task?: string
+  readonly resumeSessionId?: string
+  readonly permissionPreset?: string
+  readonly model?: ModelOverride
+}
+
+/** Drive one run using public Harness services and retain ownership until durable teardown. */
 export async function executeHarnessTask(
   ctx: HarnessContext,
-  task: string,
+  request: HarnessRunRequest,
   hooks: HarnessHooks,
   continueSession?: (controller: AgentController) => Promise<void>,
 ): Promise<number> {
-  const controller = await createHarnessAgentController(ctx, hooks)
-  try {
-    await controller.create(`session-${randomUUID()}`)
-    hooks.ready(() => { controller.cancel({ kind: 'user' }) })
+  const controller = await createHarnessAgentController(ctx, hooks, request.model)
+  let code = 1
+  const session = async (): Promise<number> => {
+    if (request.resumeSessionId === undefined) await controller.create(`session-${randomUUID()}`)
+    else await controller.resume(request.resumeSessionId)
+    hooks.ready({
+      cancel: () => { controller.cancel({ kind: 'user' }) },
+      whenIdle: () => controller.whenIdle(),
+      presentTool: node => controller.presentTool(node),
+    })
     await controller.whenIdle()
-    const firstSeq = controller.session?.seq ?? 0
-    controller.followup(task)
-    await controller.whenIdle()
-    if (!await controller.flush()) {
+    if (request.permissionPreset !== undefined) {
+      const outcome = await controller.executeCommand(
+        `/permission ${request.permissionPreset}`,
+        new AbortController().signal,
+      )
+      if (outcome === undefined || outcome.result.kind === 'error') {
+        throw new Error(`permission preset ${request.permissionPreset} was rejected by the Harness command`)
+      }
+    }
+    const task = request.task?.trim() ?? ''
+    if (task !== '') {
+      const firstSeq = controller.session?.seq ?? 0
+      controller.followup(task)
+      await controller.whenIdle()
+      if (!await controller.flush()) {
+        throw new Error(`no persistence listener flushed session ${controller.session?.id ?? 'unknown'}`)
+      }
+      const events = controller.session?.events ?? []
+      let reason: string | undefined
+      for (const event of events) {
+        if (event.seq >= firstSeq && event.kind === 'turn-end') reason = event.text
+      }
+      if (reason !== 'completed') return 1
+    } else if (!await controller.flush()) {
       throw new Error(`no persistence listener flushed session ${controller.session?.id ?? 'unknown'}`)
     }
-    const events = controller.session?.events ?? []
-    let reason: string | undefined
-    for (const event of events) {
-      if (event.seq >= firstSeq && event.kind === 'turn-end') reason = event.text
-    }
-    if (reason !== 'completed') return 1
     await continueSession?.(controller)
     return 0
+  }
+  try {
+    code = await session()
   } finally {
+    // Durability is settled before the handle removes the live session.
+    if (controller.state === 'active') {
+      try {
+        if (!await controller.flush()) {
+          hooks.diagnostic('session was not flushed: no persistence listener participated')
+          if (code === 0) code = NOT_DURABLE_EXIT_CODE
+        }
+      } catch (error) {
+        hooks.diagnostic(`session flush failed: ${error instanceof Error ? error.message : String(error)}`)
+        if (code === 0) code = NOT_DURABLE_EXIT_CODE
+      }
+    }
     await controller.dispose()
   }
+  return code
 }
