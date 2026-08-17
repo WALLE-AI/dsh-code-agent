@@ -38,7 +38,7 @@ const baseURL = process.env.DEEPSEEK_BASE_URL
   ?? dotenv.DEEPSEEK_URL
   ?? 'https://api.deepseek.com'
 
-const harness = join(root, 'opensource/deepseek-harness')
+const harness = join(root, 'opensource/deepseek-harness/deepseek-harness-master')
 // The approval mode runs in a throwaway workspace under the read-only preset,
 // so a write can only proceed through a human escalation decision.
 const approvalMode = process.argv.includes('--approval')
@@ -117,7 +117,9 @@ interface Step {
  * The composer only becomes interactive after the first task settles, and its
  * hint is the one on-screen signal the echoed prompt cannot forge.
  */
-const firstTurnSettled = (transcript: string): boolean => transcript.includes('Enter send')
+// The idle hint appears only when the Agent has settled, which is exactly the
+// condition this probe wants.
+const firstTurnSettled = (transcript: string): boolean => transcript.includes('ctrl+p commands')
 
 const quitSteps: readonly Step[] = [
   { name: 'type-quit', ready: firstTurnSettled, send: '/quit', done: tail => tail.includes('/quit') },

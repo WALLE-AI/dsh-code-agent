@@ -10,7 +10,7 @@ describe('phase-zero terminal state', () => {
     store.append({ seq: 2, kind: 'assistant-delta', text: 'two' })
     store.append({ seq: 3, kind: 'tool-call', text: 'three', name: 'bash', callId: 'c1' })
     expect(store.snapshot().lines.map(line => line.text))
-      .toEqual(['two', '▸ bash  [running]', '  three'])
+      .toEqual(['● two', '▸ bash  [running]', ' ⎿ three'])
   })
 
   it('publishes reference-stable snapshots only when state changes', () => {

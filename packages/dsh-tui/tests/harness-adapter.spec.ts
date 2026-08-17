@@ -117,7 +117,7 @@ describe('Harness session event normalization', () => {
 
     deliverSessionEvent({ events }, events[0] as RuntimeEvent, known, hooks)
     expect(deliverSessionEvent({ events }, events[2] as RuntimeEvent, known, hooks)).toBeUndefined()
-    expect(store.snapshot().lines.map(line => line.text)).toEqual(['> one', 'two'])
+    expect(store.snapshot().lines.map(line => line.text)).toEqual(['> one', '● two'])
     expect(store.snapshot().error).toBeUndefined()
   })
 
@@ -241,6 +241,7 @@ describe('Harness session event normalization', () => {
       approval: vi.fn(async (): Promise<'allowed-once'> => 'allowed-once'),
       question: vi.fn(async () => ({ answers: [] })),
       diagnostic: vi.fn(),
+    model: vi.fn(),
       ready: vi.fn(),
     }
 

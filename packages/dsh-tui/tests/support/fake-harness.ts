@@ -81,6 +81,7 @@ export function fakeHooks(overrides: Partial<HarnessHooks> = {}): HarnessHooks {
     question: vi.fn(async () => ({ answers: [] })),
     diagnostic: vi.fn(),
     ready: vi.fn(),
+  model: vi.fn(),
     ...overrides,
   }
 }

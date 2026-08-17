@@ -1,16 +1,28 @@
 import React, { useEffect, useState, useSyncExternalStore } from 'react'
 import { Box, render, Text, useInput } from 'ink'
-import { activityStatusLine } from './activity.ts'
 import { formatSessionRow } from './session-selector.ts'
 import {
-  backspaceComposer, emptyComposer, historyComposer, insertComposer,
-  newlineComposer, submitComposer,
+  caretLine, clearComposer, deleteComposer, emptyComposer, historyComposer,
+  insertComposer, moveComposer, newlineComposer, submitComposer,
 } from './composer.ts'
+import type { ComposerState } from './composer.ts'
 import type { TuiActions, TuiView } from './contracts.ts'
+import {
+  acceptCompletion, mentionTokenAt, rankCommands, rankFiles, slashTokenAt,
+} from './draft-completion.ts'
 import type { TuiStore } from './state.ts'
 import { displayWidth, sanitizeLine, truncateToWidth, wrapToWidth } from './terminal-text.ts'
 import { RenderBoundary } from './render-boundary.tsx'
-import { currentToolEntryId, type TranscriptTone } from './transcript-view.ts'
+import { formatElapsed, spinnerFrame, SPINNER_INTERVAL_MS } from './spinner.ts'
+import { buildStatusModel, renderContextBar, renderSegments } from './status-line.ts'
+import {
+  ASCII_TODO_GLYPHS, buildTodoPanel, todoPanelRows, UNICODE_TODO_GLYPHS,
+} from './todo-panel.ts'
+import { buildWorkingLine } from './working-line.ts'
+import { glyphSet } from './glyphs.ts'
+import type { RowTone } from './styling.ts'
+import { resolveTheme, type Theme } from './theme.ts'
+import { currentToolEntryId, type TranscriptLine } from './transcript-view.ts'
 import {
   emptyViewport, scrollViewport, syncViewport, viewportLines,
 } from './viewport.ts'
@@ -20,17 +32,79 @@ import {
   type QuestionFormState,
 } from './question-form.ts'
 import { terminalLayout, terminalLayoutPolicy } from './terminal-layout.ts'
+import {
+  fromInkKey, KEY_BINDINGS, resolveKey, type UiAction, type UiSurface,
+} from './keymap.ts'
+import { buildOverlay, fitHint, helpRows, type OverlayRow } from './overlay.ts'
+import {
+  backspaceBrowser, browserEmptyText, browserFocusIndex, browserMatches,
+  emptyBrowser, escapeBrowser, moveBrowser, SPLIT_MIN_COLUMNS, typeBrowser,
+  type BrowserState,
+} from './session-browser.ts'
 
-const TONE_COLOR: Record<TranscriptTone, string | undefined> = {
-  user: 'green',
-  assistant: undefined,
-  reasoning: undefined,
-  system: undefined,
-  tool: 'cyan',
-  error: 'red',
+
+/**
+ * Locate the caret in the wrapped draft. `wrapToWidth` is greedy and per
+ * logical line, so wrapping the text before the caret yields the same rows the
+ * full draft produces — the last of them is the caret's row.
+ */
+function caretPosition(
+  composer: ComposerState,
+  width: number,
+): { row: number; column: number } {
+  const before = Array.from(composer.draft).slice(0, composer.cursor).join('')
+  const rows = wrapToWidth(before, width)
+  const last = rows.at(-1) ?? ''
+  // A prefix that exactly fills its row leaves the caret on the next one.
+  if (displayWidth(last) >= width) return { row: rows.length, column: 0 }
+  return { row: rows.length - 1, column: Array.from(last).length }
 }
 
-const DIM_TONES = new Set<TranscriptTone>(['reasoning', 'system'])
+/**
+ * The closed outcome set of an approval. `ApprovalDecision` has no "always"
+ * member, so there is deliberately no third row here.
+ */
+const APPROVAL_CHOICES = [
+  { label: 'allow once', allowed: true },
+  { label: 'reject', allowed: false },
+] as const
+
+/** Preview rows taken from the pending call's own card. */
+const APPROVAL_PREVIEW_ROWS = 3
+
+/** Ink props for a tone, omitting `color` entirely when there is none to set. */
+function themed(theme: Theme, tone: RowTone): { color?: string } {
+  const color = theme.color(tone)
+  return color === undefined ? {} : { color }
+}
+
+/**
+ * A running card's header, with the static status glyph replaced by the current
+ * spinner frame and the elapsed time appended. Any other row is returned as-is.
+ */
+function runningText(line: TranscriptLine, now: number, animate: boolean): string {
+  if (line.running === undefined) return line.text
+  const { indent, rest, startedAtMs } = line.running
+  const glyph = animate ? spinnerFrame(now) : line.text.slice(indent.length, indent.length + 1)
+  const elapsed = startedAtMs === undefined ? '' : `  ${formatElapsed(now - startedAtMs)}`
+  return `${indent}${glyph} ${rest}${elapsed}`
+}
+
+/**
+ * Re-render on a fixed period while something is running.
+ *
+ * The timer exists only while `active`, so a settled session holds no interval
+ * at all — an idle TUI must not wake the event loop 12 times a second.
+ */
+function useAnimationClock(active: boolean, periodMs: number): number {
+  const [tick, setTick] = useState(0)
+  useEffect(() => {
+    if (!active) return
+    const timer = setInterval(() => { setTick(current => current + 1) }, periodMs)
+    return () => { clearInterval(timer) }
+  }, [active, periodMs])
+  return tick
+}
 
 function useTerminalSize(stdout: NodeJS.WriteStream): { rows: number; columns: number } {
   const [size, setSize] = useState({ rows: stdout.rows ?? 24, columns: stdout.columns ?? 80 })
@@ -43,12 +117,15 @@ function useTerminalSize(stdout: NodeJS.WriteStream): { rows: number; columns: n
 }
 
 export function TuiApp({
-  store, actions, stdout, color, onRenderError,
+  store, actions, stdout, theme, onRenderError, animate = true, clock = Date.now,
 }: {
   store: TuiStore
   actions: TuiActions
   stdout: NodeJS.WriteStream
-  color: boolean
+  theme: Theme
+  /** Off for a terminal that cannot animate, and for deterministic tests. */
+  animate?: boolean
+  clock?: () => number
   onRenderError?: (region: string, message: string) => void
 }): React.JSX.Element {
   const state = useSyncExternalStore(store.subscribe, store.snapshot, store.snapshot)
@@ -57,8 +134,14 @@ export function TuiApp({
   const [questionForm, setQuestionForm] = useState<QuestionFormState>()
   const [confirm, setConfirm] = useState<'cancel' | undefined>()
   const [palette, setPalette] = useState<{ query: string; index: number }>()
-  const [picker, setPicker] = useState<{ index: number }>()
   const [focus, setFocus] = useState<'composer' | 'transcript'>('composer')
+  const [completion, setCompletion] = useState(0)
+  /** Highlighted approval answer; reject is the default, as it fails closed. */
+  const [approvalChoice, setApprovalChoice] = useState(1)
+  const [helpOpen, setHelpOpen] = useState(false)
+  const [browser, setBrowser] = useState<BrowserState>()
+  /** Token start the completion list was dismissed for, if any. */
+  const [dismissed, setDismissed] = useState<number>()
   const { rows, columns } = useTerminalSize(stdout)
   const questionPrompt = state.question
   const activeQuestionForm = questionPrompt !== undefined && questionForm?.promptId === questionPrompt.id
@@ -69,23 +152,37 @@ export function TuiApp({
     : questionPrompt?.questions[activeQuestionForm.index]
   const visibleQuestion = state.approval === undefined ? activeQuestion : undefined
   const modalFree = state.approval === undefined && visibleQuestion === undefined
-  const paletteOpen = palette !== undefined && modalFree
-  const pickerOpen = picker !== undefined && modalFree && !paletteOpen
-  const pickerIndex = state.sessions.length === 0
-    ? 0
-    : Math.min(picker?.index ?? 0, state.sessions.length - 1)
+  // A screen replaces the conversation; a prompt still outranks it, because the
+  // Agent is blocked until it is answered.
+  const browserOpen = browser !== undefined && modalFree
+  const helpVisible = helpOpen && modalFree && !browserOpen
+  const paletteOpen = palette !== undefined && modalFree && !helpVisible
   const paletteMatches = !paletteOpen ? [] : state.commands.filter(command =>
     command.name.toLowerCase().includes(palette.query.toLowerCase()))
   const paletteIndex = paletteMatches.length === 0
     ? 0
     : Math.min(palette?.index ?? 0, paletteMatches.length - 1)
-  const composerVisible = state.interactive && modalFree && !paletteOpen && !pickerOpen
-  const commandNeedle = composerVisible && composer.draft.startsWith('/')
-    ? composer.draft.slice(1).split(/\s/, 1)[0]?.toLowerCase() ?? ''
-    : undefined
-  const commandMatches = commandNeedle === undefined ? [] : state.commands
-    .filter(command => command.name.toLowerCase().startsWith(commandNeedle))
-    .slice(0, terminalLayoutPolicy(rows).commandLimit)
+  const composerVisible = state.interactive && modalFree && !paletteOpen
+    && !helpVisible && !browserOpen
+  // Completion works off the caret: a slash command owns the first token, a
+  // mention can sit anywhere. Only one can be active at a time.
+  const slashToken = !composerVisible ? undefined : slashTokenAt(composer.draft, composer.cursor)
+  const mentionToken = !composerVisible || slashToken !== undefined
+    ? undefined
+    : mentionTokenAt(composer.draft, composer.cursor)
+  const completionToken = slashToken ?? mentionToken
+  const completionMatches = slashToken !== undefined
+    ? rankCommands(slashToken.needle, state.commands)
+    : mentionToken !== undefined ? rankFiles(mentionToken.needle, state.files) : []
+  // Esc dismisses the list for the token it was showing, not for the draft:
+  // typing on into the same mention must not resurrect it.
+  const completionOpen = completionToken !== undefined
+    && completionMatches.length > 0
+    && dismissed !== completionToken.start
+  const completionLimit = terminalLayoutPolicy(rows).commandLimit
+  const completionIndex = completionMatches.length === 0
+    ? 0
+    : Math.min(completion, completionMatches.length - 1)
   const customVisible = visibleQuestion !== undefined && activeQuestionForm !== undefined
     && ((visibleQuestion.options?.length ?? 0) === 0
       || (activeQuestionForm.custom[visibleQuestion.id]?.length ?? 0) > 0)
@@ -94,30 +191,106 @@ export function TuiApp({
   const approvalEntry = state.approval?.callId === undefined
     ? undefined
     : state.entries.find(entry => entry.id === `tool:${state.approval?.callId ?? ''}`)
-  const approvalDetail = [
-    approvalEntry?.header, approvalEntry?.detail[0], state.approval?.reason,
-  ].filter((part): part is string => part !== undefined && part !== '').join('  ·  ')
+  // The decision needs the call itself, not a one-line summary of it: a command
+  // or a diff is what the answer actually turns on.
+  const approvalPreview = state.approval === undefined ? [] : [
+    ...(approvalEntry?.header === undefined ? [] : [approvalEntry.header]),
+    ...(approvalEntry?.detail ?? []).slice(0, APPROVAL_PREVIEW_ROWS).map(line => line.text),
+    ...(state.approval.reason === undefined ? [] : [`reason: ${state.approval.reason}`]),
+  ]
+  // An approval outranks a questionnaire because it gates a tool about to run,
+  // but the questionnaire must not vanish without a trace.
+  const queuedPrompts = state.approval !== undefined && activeQuestion !== undefined
   // The prompt marker occupies two cells and the cursor block one more.
-  const draftRows = composerVisible
-    ? wrapToWidth(`${composer.draft} `, Math.max(1, columns - 2))
-    : ['']
+  const draftWidth = Math.max(1, columns - 2)
+  // The trailing space is the cell the caret occupies when it sits at the end.
+  const draftRows = composerVisible ? wrapToWidth(`${composer.draft} `, draftWidth) : ['']
+  const caret = caretPosition(composer, draftWidth)
+  // Something is running whenever the Agent is busy or a card is still open.
+  const running = state.status === 'running'
+    || state.entries.some(entry => entry.status === 'pending')
+  // A single clock read keeps every row of one frame consistent with each other.
+  const now = clock()
+  const glyphs = glyphSet(animate)
+  const status = buildStatusModel(state.activity, state.counters, {
+    ...(state.model === undefined ? {} : { model: state.model }),
+    ...(state.workspace.branch === undefined ? {} : { branch: state.workspace.branch }),
+    ...(state.workspace.directory === undefined ? {} : { directory: state.workspace.directory }),
+    running,
+    paused: viewport.offsetFromBottom > 0,
+    unread: viewport.unread,
+  })
   const layout = terminalLayout({
     rows,
     composerRows: draftRows.length,
     interactive: composerVisible,
     approval: state.approval !== undefined,
-    approvalReason: approvalDetail !== '',
+    approvalReason: approvalPreview.length > 0,
     ...visibleQuestion === undefined ? {} : { question: {
       detail: visibleQuestion.detail !== undefined,
       optionCount: visibleQuestion.options?.length ?? 0,
       customVisible,
     } },
-    commandCount: commandMatches.length,
+    commandCount: completionOpen ? Math.min(completionMatches.length, completionLimit) : 0,
     ...(paletteOpen ? { listModal: { count: Math.max(1, paletteMatches.length) } } : {}),
-    ...(pickerOpen ? { listModal: { count: Math.max(1, state.sessions.length) } } : {}),
+    ...(helpVisible ? { listModal: { count: KEY_BINDINGS.length } } : {}),
+    // The pane spends two extra rows on its title and scroll hints.
     notice: notice !== undefined,
     error: state.error !== undefined,
+    todoRows: todoPanelRows(state.activity),
+    working: running,
+    contextBar: status.bar !== undefined,
   })
+  // While the Agent is working, one line above the composer says so.
+  const workingLine = !running || !layout.showWorking ? undefined : buildWorkingLine({
+    frame: animate ? spinnerFrame(now) : glyphs.pending,
+    turn: state.turn.index,
+    elapsedMs: state.turn.startedAtMs === 0 ? 0 : now - state.turn.startedAtMs,
+    ...(state.activity.tokens === undefined ? {} : { tokens: state.activity.tokens.output }),
+    separator: glyphs.marker,
+  }, columns)
+  const todoPanel = buildTodoPanel(
+    state.activity, columns, layout.todoRows,
+    animate ? UNICODE_TODO_GLYPHS : ASCII_TODO_GLYPHS,
+  )
+  const browserRows = browser === undefined ? [] : browserMatches(state.sessions, browser.query)
+  const browserFocus = browser === undefined ? 0 : browserFocusIndex(browserRows, browser)
+  // Both list overlays share one model, one window rule and one region.
+  const overlayRows: readonly OverlayRow[] = helpVisible
+    ? helpRows(KEY_BINDINGS)
+    : paletteOpen
+    ? paletteMatches.map(command => ({
+      id: command.name,
+      text: `/${command.name}  ${command.description}`,
+      lines: 1,
+    }))
+    : []
+  const overlay = !paletteOpen && !helpVisible ? undefined : buildOverlay(
+    overlayRows,
+    helpVisible ? 0 : paletteIndex,
+    {
+      ...(helpVisible ? { marker: ' ' } : {}),
+      title: helpVisible ? 'Shortcuts' : 'Commands',
+      hint: fitHint(
+        helpVisible
+          ? ['any key to close', 'Esc']
+          : [
+            'type to filter · ↑↓ select · Enter prefill · Esc close',
+            '↑↓ · Enter · Esc',
+            'Esc',
+          ],
+        Math.max(0, columns - 20),
+      ),
+      columns,
+      rowBudget: helpVisible ? Math.max(1, layout.viewportRows) : layout.paletteLimit,
+      emptyText: 'no command matches',
+    },
+  )
+  // The window follows the caret so an edit high up in a long draft stays visible.
+  const draftStart = Math.max(0, Math.min(
+    caret.row - layout.composerRows + 1,
+    draftRows.length - layout.composerRows,
+  ))
   const optionStart = visibleQuestion?.options === undefined || activeQuestionForm === undefined
     ? 0
     : Math.max(0, Math.min(
@@ -128,84 +301,159 @@ export function TuiApp({
     if (questionPrompt === undefined) setQuestionForm(undefined)
     else if (questionForm?.promptId !== questionPrompt.id) setQuestionForm(createQuestionForm(questionPrompt))
   }, [questionPrompt, questionForm?.promptId])
+  // Rows are wrapped in the store, so a resize re-flows the whole transcript.
+  useEffect(() => { store.setColumns(columns) }, [store, columns])
+  // Persisted history arrives once, after the first frame; adopt it only while
+  // the composer has none of its own so a submitted draft is never displaced.
+  useEffect(() => {
+    if (state.history.length === 0) return
+    setComposer(current => current.history.length > 0
+      ? current
+      : { ...current, history: state.history })
+  }, [state.history])
+  // A different token is a different list: start at its first candidate.
+  useEffect(() => { setCompletion(0) }, [completionToken?.start, completionToken?.needle])
+  const mentionNeedle = mentionToken?.needle
+  useEffect(() => {
+    if (mentionNeedle !== undefined) actions.listFiles(mentionNeedle)
+  }, [mentionNeedle, actions])
   useEffect(() => {
     setViewport(current => syncViewport(
       current, state.lines.length, state.transcriptRevision, layout.viewportRows,
     ))
   }, [state.lines.length, state.transcriptRevision, layout.viewportRows])
-  // A single clock read keeps every picker row consistent within one frame.
-  const now = Date.now()
+  useAnimationClock(animate && running, SPINNER_INTERVAL_MS)
   const visibleLines = viewportLines(state.lines, viewport, layout.viewportRows)
   const visibleEnd = Math.max(0, state.lines.length - viewport.offsetFromBottom)
   const currentTool = currentToolEntryId(state.entries, state.lines, visibleEnd)
+  const surface: UiSurface = state.approval !== undefined
+    ? 'approval'
+    : activeQuestion !== undefined && activeQuestionForm !== undefined && questionPrompt !== undefined
+      ? 'question'
+      : browserOpen
+        ? 'browser'
+        : helpVisible
+        ? 'help'
+        : paletteOpen
+          ? 'palette'
+          : focus === 'transcript' ? 'transcript' : 'composer'
+  // The early-return段 of the open cascade must not disarm a pending confirmation:
+  // moving focus or opening a list is not "some other key was pressed".
+  const keepsCancelArmed = (action: UiAction): boolean =>
+    action.kind === 'open-palette' || action.kind === 'open-picker' || action.kind === 'toggle-focus'
+    || (surface === 'transcript'
+      && (action.kind === 'focus-composer' || (action.kind === 'scroll' && !action.page)))
   useInput((input, key) => {
-    if (key.ctrl && input === 'c') {
-      if (confirm === 'cancel') {
+    const event = fromInkKey(input, key)
+    const line = caretLine(composer)
+    const action = resolveKey(surface, event, {
+      interactive: state.interactive,
+      cancelArmed: confirm === 'cancel',
+      questionHasOptions: (activeQuestion?.options?.length ?? 0) > 0,
+      draftEmpty: composer.draft === '',
+      canMoveUp: line.index > 0,
+      canMoveDown: line.index < line.count - 1,
+      completionOpen,
+      completionExact: completionToken !== undefined
+        && completionMatches[completionIndex]?.value
+          === composer.draft.slice(completionToken.start, completionToken.end),
+    })
+    if (action === undefined) {
+      if ((surface === 'composer' || surface === 'transcript') && confirm !== undefined) {
+        setConfirm(undefined)
+      }
+      return
+    }
+    if ((surface === 'composer' || surface === 'transcript')
+      && confirm !== undefined && !keepsCancelArmed(action)) {
+      setConfirm(undefined)
+    }
+    const scrollBy = (direction: -1 | 1, amount: number): void => {
+      if (direction === -1) {
+        // At the oldest rendered row, page more retained history into the window.
+        const atTop = viewport.offsetFromBottom >= Math.max(0, state.lines.length - layout.viewportRows)
+        if (atTop && state.hasMoreHistory) actions.expandTranscript()
+      }
+      setViewport(current => scrollViewport(current, direction, amount, layout.viewportRows))
+    }
+    const finishQuestion = (next: QuestionFormState): void => {
+      if (questionPrompt === undefined) return
+      const advanced = advanceQuestionForm(next, questionPrompt)
+      if (advanced.answer !== undefined) {
+        actions.answerQuestion(advanced.answer)
+        setQuestionForm(undefined)
+      } else setQuestionForm(advanced.state)
+    }
+    switch (action.kind) {
+      case 'cancel-arm': return setConfirm('cancel')
+      case 'cancel': {
         setConfirm(undefined)
         return actions.cancel()
       }
-      return setConfirm('cancel')
-    }
-    const isReturn = key.return || /^[\r\n]+$/.test(input)
-    if (state.approval !== undefined) {
-      if (input.toLowerCase() === 'y') actions.decideApproval(true)
-      if (input.toLowerCase() === 'n' || key.escape || key.return) actions.decideApproval(false)
-      return
-    }
-    if (questionPrompt !== undefined && activeQuestionForm !== undefined && activeQuestion !== undefined) {
-      const finish = (next: QuestionFormState): void => {
-        const advanced = advanceQuestionForm(next, questionPrompt)
-        if (advanced.answer !== undefined) {
-          actions.answerQuestion(advanced.answer)
-          setQuestionForm(undefined)
-        } else setQuestionForm(advanced.state)
+      case 'approval-decide': {
+        setApprovalChoice(1)
+        return actions.decideApproval(action.allowed)
       }
-      if (key.upArrow) return setQuestionForm(moveQuestionOption(activeQuestionForm, activeQuestion, -1))
-      if (key.downArrow) return setQuestionForm(moveQuestionOption(activeQuestionForm, activeQuestion, 1))
-      if (key.backspace || key.delete) {
+      case 'approval-move': return setApprovalChoice(current => Math.max(
+        0, Math.min(APPROVAL_CHOICES.length - 1, current + action.delta),
+      ))
+      case 'approval-confirm': {
+        const choice = APPROVAL_CHOICES[approvalChoice] ?? APPROVAL_CHOICES[1]
+        setApprovalChoice(1)
+        return actions.decideApproval(choice.allowed)
+      }
+      case 'question-move': {
+        if (activeQuestionForm === undefined || activeQuestion === undefined) return
+        return setQuestionForm(moveQuestionOption(activeQuestionForm, activeQuestion, action.delta))
+      }
+      case 'question-backspace': {
+        if (activeQuestionForm === undefined || activeQuestion === undefined) return
         return setQuestionForm(backspaceQuestionCustom(activeQuestionForm, activeQuestion))
       }
-      const numericOption = /^[1-9]$/.test(input) ? Number(input) - 1 : -1
-      if (numericOption >= 0 && activeQuestion.options?.[numericOption] !== undefined) {
-        const next = chooseQuestionOption(activeQuestionForm, activeQuestion, numericOption)
+      case 'question-choose': {
+        if (activeQuestionForm === undefined || activeQuestion === undefined) return
+        // A digit with no matching option is ordinary text for the "Other" field.
+        if (activeQuestion.options?.[action.index] === undefined) {
+          return setQuestionForm(appendQuestionCustom(
+            activeQuestionForm, activeQuestion, String(action.index + 1),
+          ))
+        }
+        const next = chooseQuestionOption(activeQuestionForm, activeQuestion, action.index)
         if (activeQuestion.multiSelect === true) setQuestionForm(next)
-        else finish(next)
+        else finishQuestion(next)
         return
       }
-      if (input === ' ' && (activeQuestion.options?.length ?? 0) > 0) {
+      case 'question-toggle': {
+        if (activeQuestionForm === undefined || activeQuestion === undefined) return
         return setQuestionForm(chooseQuestionOption(activeQuestionForm, activeQuestion))
       }
-      if (isReturn) {
-        if ((activeQuestion.options?.length ?? 0) > 0
-          && activeQuestion.multiSelect !== true
-          && !questionAnswered(activeQuestionForm, activeQuestion)) {
-          return finish(chooseQuestionOption(activeQuestionForm, activeQuestion))
+      case 'question-submit': {
+        if (activeQuestionForm === undefined || activeQuestion === undefined) return
+        const hasOptions = (activeQuestion.options?.length ?? 0) > 0
+        if (hasOptions && !questionAnswered(activeQuestionForm, activeQuestion)) {
+          const chosen = chooseQuestionOption(activeQuestionForm, activeQuestion)
+          if (activeQuestion.multiSelect === true) return setQuestionForm(chosen)
+          return finishQuestion(chosen)
         }
-        if ((activeQuestion.options?.length ?? 0) > 0
-          && activeQuestion.multiSelect === true
-          && !questionAnswered(activeQuestionForm, activeQuestion)) {
-          return setQuestionForm(chooseQuestionOption(activeQuestionForm, activeQuestion))
-        }
-        finish(activeQuestionForm)
-        return
+        return finishQuestion(activeQuestionForm)
       }
-      if (!key.ctrl && !key.meta && input !== '') {
-        setQuestionForm(appendQuestionCustom(activeQuestionForm, activeQuestion, input))
+      case 'question-type': {
+        if (activeQuestionForm === undefined || activeQuestion === undefined) return
+        return setQuestionForm(appendQuestionCustom(activeQuestionForm, activeQuestion, action.text))
       }
-      return
-    }
-    if (paletteOpen) {
-      if (key.escape) return setPalette(undefined)
-      if (key.upArrow) return setPalette(current => current === undefined
+      case 'palette-close': return setPalette(undefined)
+      case 'palette-move': return setPalette(current => current === undefined
         ? current
-        : { ...current, index: Math.max(0, paletteIndex - 1) })
-      if (key.downArrow) return setPalette(current => current === undefined
-        ? current
-        : { ...current, index: Math.min(paletteMatches.length - 1, paletteIndex + 1) })
-      if (key.backspace || key.delete) return setPalette(current => current === undefined
+        : {
+          ...current,
+          index: action.delta === -1
+            ? Math.max(0, paletteIndex - 1)
+            : Math.min(paletteMatches.length - 1, paletteIndex + 1),
+        })
+      case 'palette-backspace': return setPalette(current => current === undefined
         ? current
         : { ...current, query: Array.from(current.query).slice(0, -1).join('') })
-      if (isReturn) {
+      case 'palette-accept': {
         const chosen = paletteMatches[paletteIndex]
         setPalette(undefined)
         // The draft is prefilled so a command with arguments stays reviewable.
@@ -217,104 +465,163 @@ export function TuiApp({
         }
         return
       }
-      if (!key.ctrl && !key.meta && input !== '') {
-        return setPalette(current => current === undefined
-          ? current
-          : { query: current.query + input, index: 0 })
+      case 'palette-type': return setPalette(current => current === undefined
+        ? current
+        : { query: current.query + action.text, index: 0 })
+      case 'open-help': return setHelpOpen(true)
+      case 'close-help': return setHelpOpen(false)
+      case 'cycle-mode': {
+        // The preset list comes from the projection; switching goes through the
+        // official command so the Harness stays the single source of truth.
+        const options = state.activity.permission?.options ?? []
+        const current = options.findIndex(
+          option => option.value === state.activity.permission?.current,
+        )
+        const next = options[(current + 1) % Math.max(1, options.length)]
+        if (next !== undefined) actions.submit(`/permission ${next.value}`)
+        return
       }
-      return
-    }
-    if (pickerOpen) {
-      if (key.escape) return setPicker(undefined)
-      if (key.upArrow) return setPicker({ index: Math.max(0, pickerIndex - 1) })
-      if (key.downArrow) return setPicker({ index: Math.min(state.sessions.length - 1, pickerIndex + 1) })
-      if (isReturn) {
-        const chosen = state.sessions[pickerIndex]
-        setPicker(undefined)
-        if (chosen !== undefined) actions.resumeSession(chosen.id)
+      case 'open-palette': return setPalette({ query: '', index: 0 })
+      case 'open-picker': {
+        actions.listSessions()
+        return setBrowser(emptyBrowser)
       }
-      return
-    }
-    if (key.ctrl && input === 'p') {
-      if (!state.interactive) return
-      return setPalette({ query: '', index: 0 })
-    }
-    if (key.ctrl && input === 'r') {
-      if (!state.interactive) return
-      actions.listSessions()
-      return setPicker({ index: 0 })
-    }
-    if (key.tab) {
+      case 'browser-move': return setBrowser(current => current === undefined
+        ? current
+        : moveBrowser(current, browserRows, action.delta))
+      case 'browser-page': return setBrowser(current => current === undefined
+        ? current
+        // Paging is repeated single steps so it always lands on a real row.
+        : moveBrowser(current, browserRows, action.delta * Math.max(1, layout.viewportRows - 2)))
+      case 'browser-type': return setBrowser(current => current === undefined
+        ? current
+        : typeBrowser(current, action.text))
+      case 'browser-backspace': return setBrowser(current => current === undefined
+        ? current
+        : backspaceBrowser(current))
+      case 'browser-accept': {
+        const chosen = browserRows[browserFocus]
+        if (chosen === undefined) return
+        // The screen stays open until the resume actually lands, so a failure
+        // is visible where it happened rather than behind a closed screen.
+        setBrowser(current => current === undefined ? current : { ...current, resuming: true })
+        return actions.resumeSession(chosen.id)
+      }
+      case 'browser-escape': {
+        if (browser === undefined) return
+        const next = escapeBrowser(browser)
+        return setBrowser(next.close ? undefined : next.state)
+      }
       // Only two panes exist: the transcript and the composer.
-      return setFocus(current => current === 'composer' ? 'transcript' : 'composer')
-    }
-    if (focus === 'transcript') {
-      const step = (direction: -1 | 1): void => {
-        if (direction === -1) {
-          const atTop = viewport.offsetFromBottom >= Math.max(0, state.lines.length - layout.viewportRows)
-          if (atTop && state.hasMoreHistory) actions.expandTranscript()
-        }
-        setViewport(current => scrollViewport(current, direction, 1, layout.viewportRows))
+      case 'toggle-focus':
+        return setFocus(current => current === 'composer' ? 'transcript' : 'composer')
+      case 'focus-composer': return setFocus('composer')
+      case 'scroll':
+        return scrollBy(action.direction, action.page ? layout.viewportRows : 1)
+      case 'toggle-fold': {
+        if (currentTool !== undefined) actions.toggleFold(currentTool)
+        return
       }
-      if (key.upArrow || input === 'k') return step(-1)
-      if (key.downArrow || input === 'j') return step(1)
-      if (isReturn || key.escape) return setFocus('composer')
+      case 'open-editor': {
+        const entry = state.entries.find(item => item.id === currentTool)
+        const location = entry?.locations[0]
+        if (location !== undefined) actions.openLocation(location)
+        return
+      }
+      case 'completion-accept': {
+        const item = completionMatches[completionIndex]
+        if (item === undefined || completionToken === undefined) return
+        setCompletion(0)
+        return setComposer(current => acceptCompletion(current, completionToken, item))
+      }
+      case 'completion-move': return setCompletion(action.delta === -1
+        ? Math.max(0, completionIndex - 1)
+        : Math.min(completionMatches.length - 1, completionIndex + 1))
+      case 'completion-dismiss': return setDismissed(completionToken?.start)
+      case 'history': return setComposer(current => historyComposer(current, action.delta))
+      case 'composer-move':
+        return setComposer(current => moveComposer(current, action.motion))
+      case 'composer-delete':
+        return setComposer(current => deleteComposer(current, action.deletion))
+      case 'composer-clear': return setComposer(clearComposer)
+      case 'composer-newline': return setComposer(newlineComposer)
+      case 'submit': {
+        setComposer(current => {
+          const submitted = submitComposer(current)
+          if (submitted.text !== undefined) actions.submit(submitted.text)
+          return submitted.state
+        })
+        return
+      }
+      case 'composer-insert':
+        return setComposer(current => insertComposer(current, action.text))
     }
-    if (confirm !== undefined) setConfirm(undefined)
-    if (key.escape) {
-      if (confirm === 'cancel') return actions.cancel()
-      return setConfirm('cancel')
-    }
-    if (key.ctrl && input === 'o') {
-      if (currentTool !== undefined) actions.toggleFold(currentTool)
-      return
-    }
-    if (key.ctrl && input === 'e') {
-      const entry = state.entries.find(item => item.id === currentTool)
-      const location = entry?.locations[0]
-      if (location !== undefined) actions.openLocation(location)
-      return
-    }
-    if (key.pageUp) {
-      // At the oldest rendered row, page more retained history into the window.
-      const atTop = viewport.offsetFromBottom >= Math.max(0, state.lines.length - layout.viewportRows)
-      if (atTop && state.hasMoreHistory) actions.expandTranscript()
-      return setViewport(current => scrollViewport(
-        current, -1, layout.viewportRows, layout.viewportRows,
-      ))
-    }
-    if (key.pageDown) return setViewport(current => scrollViewport(
-      current, 1, layout.viewportRows, layout.viewportRows,
-    ))
-    if (!state.interactive || focus === 'transcript') return
-    if (key.upArrow) return setComposer(current => historyComposer(current, -1))
-    if (key.downArrow) return setComposer(current => historyComposer(current, 1))
-    if (key.backspace || key.delete) return setComposer(backspaceComposer)
-    if (isReturn && (key.ctrl || key.meta)) return setComposer(newlineComposer)
-    if (isReturn) {
-      setComposer(current => {
-        const submitted = submitComposer(current)
-        if (submitted.text !== undefined) actions.submit(submitted.text)
-        return submitted.state
-      })
-      return
-    }
-    if (!key.ctrl && !key.meta && input !== '') setComposer(current => insertComposer(current, input))
   })
   // The status row must never wrap: a second row would break the layout budget.
-  const statusRight = activityStatusLine(
-    state.activity, state.counters, Math.max(8, Math.floor(columns / 2)),
+  // Fields are fitted right to left, so the activity segments absorb the slack.
+  const hint = !state.interactive
+    ? 'one-shot session'
+    : focus === 'transcript' ? 'j/k scroll · Tab back to input' : status.hint
+  const statusRight = renderSegments(status.right, Math.max(0, Math.floor(columns * 0.4)))
+  const statusHint = truncateToWidth(
+    hint, Math.max(0, columns - displayWidth(statusRight) - 2),
   )
-  const statusLeft = truncateToWidth(
-    layout.compact
-      ? composerVisible ? 'Enter send' : state.status
-      : !state.interactive
-          ? 'one-shot session'
-          : focus === 'transcript'
-            ? 'transcript: j/k scroll | Tab or Enter back to input'
-            : 'Enter send | Tab transcript | Ctrl+P commands | Ctrl+R sessions',
-    Math.max(0, columns - displayWidth(statusRight) - 1),
-  )
+  const statusLeft = renderSegments(status.left, Math.max(
+    0, columns - displayWidth(statusRight) - displayWidth(statusHint) - 4,
+  ))
+  const contextBar = layout.showStatus && layout.showContextBar && status.bar !== undefined
+    ? renderContextBar(status.bar.used, status.bar.total, columns)
+    : undefined
+  // A screen replaces the conversation rather than floating over it: rendering it
+  // as an early return — after every hook above — is what makes that literal.
+  // There is no transcript underneath to repaint, scroll, or bleed through.
+  if (browser !== undefined && browserOpen) {
+    const budget = Math.max(1, rows - 4)
+    const split = columns >= SPLIT_MIN_COLUMNS
+    const listColumns = split ? Math.floor(columns * 0.55) : columns
+    const view = buildOverlay(
+      browserRows.map(session => ({
+        id: session.id,
+        text: formatSessionRow(session, Math.max(1, listColumns - 2), now),
+        lines: 1,
+      })),
+      browserFocus,
+      {
+        title: 'Sessions',
+        hint: fitHint(
+          ['type to filter · ↑↓ move · Enter resume · Esc close', '↑↓ · Enter · Esc', 'Esc'],
+          Math.max(0, columns - 12),
+        ),
+        columns: listColumns,
+        rowBudget: budget,
+        emptyText: browserEmptyText(browser.query),
+      },
+    )
+    const focused = browserRows[browserFocus]
+    return <Box flexDirection="column">
+      <Box justifyContent="space-between">
+        <Text {...themed(theme, 'heading')} bold>
+          {truncateToWidth(`Sessions  ${browser.query}`, Math.max(1, columns - 12))}
+        </Text>
+        <Text dimColor>{browser.resuming ? 'resuming…' : view.hint}</Text>
+      </Box>
+      <Box>
+        <Box flexDirection="column" width={listColumns}>
+          {view.above === undefined ? null : <Text dimColor>{view.above}</Text>}
+          {view.rows.map((row, index) => <Text
+            key={String(index)}
+            {...row.startsWith('>') ? themed(theme, 'heading') : {}}
+          >{row}</Text>)}
+          {view.below === undefined ? null : <Text dimColor>{view.below}</Text>}
+        </Box>
+        {!split || focused === undefined ? null : <Box flexDirection="column" marginLeft={2}>
+          <Text dimColor>{truncateToWidth(focused.id, columns - listColumns - 2)}</Text>
+          <Text dimColor>{truncateToWidth(focused.cwd ?? '', columns - listColumns - 2)}</Text>
+          <Text dimColor>{focused.live ? 'live' : 'persisted'}</Text>
+        </Box>}
+      </Box>
+    </Box>
+  }
   return <Box flexDirection="column">
     {!layout.showHeader ? null : <Box justifyContent="space-between">
       <Text bold>DeepSeek Harness TUI</Text><Text>{state.status}</Text>
@@ -322,29 +629,52 @@ export function TuiApp({
     <Box flexDirection="column" marginTop={1} height={layout.viewportRows}>
       <RenderBoundary region="transcript" {...onRenderError === undefined ? {} : { onError: onRenderError }}>
         {visibleLines.map((line, index) => {
-          const tone = TONE_COLOR[line.tone]
+          const tone = theme.color(line.tone)
+          const plain = truncateToWidth(runningText(line, now, animate), columns)
+          // Styled runs are only used when the row survived truncation intact;
+          // re-slicing segments to a cut width would risk splitting a wide cell.
+          const segments = line.segments !== undefined && plain === line.text
+            ? line.segments
+            : undefined
           return <Text
             key={`${String(index)}:${line.entryId}`}
-            {...color && tone !== undefined ? { color: tone } : {}}
-            {...DIM_TONES.has(line.tone) || !line.header ? { dimColor: true } : {}}
+            {...tone === undefined ? {} : { color: tone }}
+            {...theme.dim(line.tone) || !line.header ? { dimColor: true } : {}}
             {...line.header && line.tone === 'user' ? { bold: true } : {}}
-          >{truncateToWidth(line.text, columns)}</Text>
+          >{segments === undefined
+            ? plain
+            : segments.map((segment, at) => <Text
+              key={String(at)}
+              {...themed(theme, segment.tone ?? line.tone)}
+              {...segment.bold === true ? { bold: true } : {}}
+              {...segment.dim === true ? { dimColor: true } : {}}
+            >{segment.text}</Text>)}</Text>
         })}
       </RenderBoundary>
     </Box>
     {state.approval === undefined ? null : <Box flexDirection="column" marginTop={1}>
-      <Text {...color ? { color: 'yellow' } : {}}>{truncateToWidth(
-        `Approve ${state.approval.toolName}?`
-        + `${state.activity.permission === undefined ? '' : ` (${state.activity.permission.current})`}`
-        + ' [y/N]',
+      <Box justifyContent="space-between">
+        <Text {...themed(theme, 'badge')} bold>{truncateToWidth(
+          `Approve ${state.approval.toolName}?`
+          + `${state.activity.permission === undefined ? '' : ` (${state.activity.permission.current})`}`,
+          columns,
+        )}</Text>
+        {!queuedPrompts ? null : <Text dimColor>1 more prompt queued</Text>}
+      </Box>
+      {approvalPreview.map((line, index) => <Text key={String(index)} dimColor>
+        {truncateToWidth(sanitizeLine(line), columns)}
+      </Text>)}
+      {APPROVAL_CHOICES.map((choice, index) => <Text
+        key={choice.label}
+        {...index === approvalChoice ? themed(theme, 'heading') : {}}
+      >{truncateToWidth(
+        `${index === approvalChoice ? '>' : ' '} ${String(index + 1)} ${choice.label}`,
         columns,
-      )}</Text>
-      {!layout.showApprovalReason ? null
-        : <Text dimColor>{truncateToWidth(sanitizeLine(approvalDetail ?? ''), columns)}</Text>}
+      )}</Text>)}
     </Box>}
     {visibleQuestion === undefined || activeQuestionForm === undefined || questionPrompt === undefined
       ? null : <Box flexDirection="column" marginTop={1}>
-      <Text {...color ? { color: 'cyan' } : {}} bold>{visibleQuestion.header
+      <Text {...themed(theme, 'heading')} bold>{visibleQuestion.header
         ?? `Question ${String(activeQuestionForm.index + 1)}/${String(questionPrompt.questions.length)}`}</Text>
       <Text wrap="truncate-end">{visibleQuestion.question}</Text>
       {!layout.showQuestionDetail ? null
@@ -355,7 +685,7 @@ export function TuiApp({
       ).map((option) => {
         const index = visibleQuestion.options?.indexOf(option) ?? 0
         const selected = activeQuestionForm.selected[visibleQuestion.id]?.includes(option.label) === true
-        return <Text key={option.label} {...color && index === activeQuestionForm.optionIndex ? { color: 'cyan' } : {}}>
+        return <Text key={option.label} {...index === activeQuestionForm.optionIndex ? themed(theme, 'heading') : {}}>
           {selected ? '[x]' : '[ ]'} {index + 1}. {option.label}
         </Text>
       })}
@@ -363,67 +693,65 @@ export function TuiApp({
         : <Text><Text dimColor>Other: </Text>{activeQuestionForm.custom[visibleQuestion.id] ?? ''}<Text inverse> </Text></Text>
       }
     </Box>}
-    {!paletteOpen ? null : <Box flexDirection="column" marginTop={1}>
-      <Text {...color ? { color: 'cyan' } : {}} bold>{truncateToWidth(
-        `Commands  ${palette.query === '' ? '(type to filter, Esc to close)' : palette.query}`,
-        columns,
-      )}</Text>
-      {paletteMatches.length === 0
-        ? <Text dimColor>no command matches</Text>
-        : paletteMatches.slice(
-          Math.max(0, Math.min(paletteIndex - 2, paletteMatches.length - layout.paletteLimit)),
-          Math.max(0, Math.min(paletteIndex - 2, paletteMatches.length - layout.paletteLimit)) + layout.paletteLimit,
-        ).map(command => <Text
-          key={command.name}
-          {...color && command.name === paletteMatches[paletteIndex]?.name ? { color: 'cyan' } : {}}
-        >{truncateToWidth(
-          `${command.name === paletteMatches[paletteIndex]?.name ? '>' : ' '} /${command.name}  ${command.description}`,
-          columns,
-        )}</Text>)}
+    {overlay === undefined ? null : <Box flexDirection="column" marginTop={1}>
+      <Box justifyContent="space-between">
+        <Text {...themed(theme, 'heading')} bold>{overlay.title}</Text>
+        <Text dimColor>{overlay.hint}</Text>
+      </Box>
+      {overlay.above === undefined ? null : <Text dimColor>{overlay.above}</Text>}
+      {overlay.rows.map((row, index) => <Text
+        key={String(index)}
+        {...row.startsWith('>') ? themed(theme, 'heading') : {}}
+      >{row}</Text>)}
+      {overlay.below === undefined ? null : <Text dimColor>{overlay.below}</Text>}
     </Box>}
-    {!pickerOpen ? null : <Box flexDirection="column" marginTop={1}>
-      <Text {...color ? { color: 'cyan' } : {}} bold>{truncateToWidth(
-        'Resume a session  (Up/Down to select, Enter to switch, Esc to close)',
-        columns,
-      )}</Text>
-      {state.sessions.length === 0
-        ? <Text dimColor>no resumable sessions</Text>
-        : state.sessions.slice(
-          Math.max(0, Math.min(pickerIndex - 2, state.sessions.length - layout.paletteLimit)),
-          Math.max(0, Math.min(pickerIndex - 2, state.sessions.length - layout.paletteLimit)) + layout.paletteLimit,
-        ).map(session => <Text
-          key={session.id}
-          {...color && session.id === state.sessions[pickerIndex]?.id ? { color: 'cyan' } : {}}
-        >{truncateToWidth(
-          `${session.id === state.sessions[pickerIndex]?.id ? '>' : ' '} ${formatSessionRow(session, columns - 2, now)}`,
-          columns,
-        )}</Text>)}
+    {workingLine === undefined ? null
+      : <Text {...themed(theme, 'tool')}>{workingLine}</Text>}
+    {todoPanel.length === 0 ? null : <Box flexDirection="column">
+      {todoPanel.map((row, index) => <Text
+        key={String(index)}
+        {...row.active ? themed(theme, 'heading') : {}}
+        {...row.active ? {} : { dimColor: true }}
+      >{row.text}</Text>)}
     </Box>}
     {!composerVisible ? null : <Box flexDirection="column" marginTop={1}>
-      {draftRows.slice(-layout.composerRows).map((row, index, shown) => {
-        const last = index === shown.length - 1
-        const prefix = index > 0 ? '  ' : draftRows.length > shown.length ? '… ' : '> '
-        return <Box key={String(index)}>
-          <Text {...color ? { color: 'green' } : {}}>{prefix}</Text>
-          <Text>{last ? row.slice(0, Math.max(0, row.length - 1)) : row}</Text>
-          {last ? <Text inverse> </Text> : null}
+      {draftRows.slice(draftStart, draftStart + layout.composerRows).map((row, index) => {
+        const rowIndex = draftStart + index
+        const prefix = rowIndex > 0 ? (index === 0 ? '… ' : '  ') : '> '
+        const cells = Array.from(row)
+        return <Box key={String(rowIndex)}>
+          <Text {...themed(theme, 'user')}>{prefix}</Text>
+          {rowIndex !== caret.row
+            ? <Text>{row}</Text>
+            : <>
+              <Text>{cells.slice(0, caret.column).join('')}</Text>
+              <Text inverse>{cells[caret.column] ?? ' '}</Text>
+              <Text>{cells.slice(caret.column + 1).join('')}</Text>
+            </>}
         </Box>
       })}
     </Box>}
-    {commandMatches.length === 0 ? null : <Box flexDirection="column">
-      {commandMatches.map(command => <Text key={command.name} wrap="truncate-end">
-        <Text {...color ? { color: 'cyan' } : {}}>/{command.name}</Text>{`  ${command.description}`}
+    {!completionOpen ? null : <Box flexDirection="column">
+      {completionMatches.slice(
+        Math.max(0, Math.min(completionIndex - 1, completionMatches.length - completionLimit)),
+        Math.max(0, Math.min(completionIndex - 1, completionMatches.length - completionLimit))
+          + completionLimit,
+      ).map(item => <Text key={item.value} wrap="truncate-end">
+        <Text {...item === completionMatches[completionIndex] ? themed(theme, 'heading') : {}}>
+          {item === completionMatches[completionIndex] ? '> ' : '  '}{item.label}
+        </Text>
+        {item.description === undefined ? '' : `  ${item.description}`}
       </Text>)}
     </Box>}
     {!layout.showNotice || notice === undefined ? null
-      : <Text {...color ? { color: 'cyan' } : {}}>{truncateToWidth(sanitizeLine(notice), columns)}</Text>}
+      : <Text {...themed(theme, 'heading')}>{truncateToWidth(sanitizeLine(notice), columns)}</Text>}
     {state.error === undefined ? null
-      : <Text {...color ? { color: 'red' } : {}}>{truncateToWidth(sanitizeLine(state.error), columns)}</Text>}
+      : <Text {...themed(theme, 'error')}>{truncateToWidth(sanitizeLine(state.error), columns)}</Text>}
+    {contextBar === undefined ? null : <Text dimColor>{contextBar}</Text>}
     {!layout.showStatus ? null : <Box justifyContent="space-between">
       <Text dimColor>{statusLeft}</Text>
-      <Text dimColor>{viewport.offsetFromBottom === 0
-        ? statusRight
-        : `paused${viewport.unread === 0 ? '' : ` | ${String(viewport.unread)} unread`}`}</Text>
+      <Text dimColor>{statusHint}</Text>
+      <Text dimColor>{statusRight}</Text>
     </Box>}
   </Box>
 }
@@ -434,15 +762,19 @@ export function createInkView(
   stdin: NodeJS.ReadStream,
   stdout: NodeJS.WriteStream,
   stderr: NodeJS.WriteStream,
-  color = true,
+  theme: Theme = resolveTheme('basic'),
   onRenderError?: (region: string, message: string) => void,
+  animate = true,
+  clock: () => number = Date.now,
 ): TuiView {
   const instance = render(
     <TuiApp
       store={store}
       actions={actions}
       stdout={stdout}
-      color={color}
+      theme={theme}
+      animate={animate}
+      clock={clock}
       {...onRenderError === undefined ? {} : { onRenderError }}
     />,
     // Ink would unmount on the first Ctrl+C; cancellation must go through the

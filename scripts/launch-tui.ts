@@ -5,7 +5,7 @@ import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
-const harness = join(root, 'opensource/deepseek-harness')
+const harness = join(root, 'opensource/deepseek-harness/deepseek-harness-master')
 const tuiPackage = join(root, 'packages/dsh-tui')
 const home = resolve(process.env.DSH_HOME?.trim() || join(homedir(), '.dsh'))
 const profile = join(home, 'profiles/tui')

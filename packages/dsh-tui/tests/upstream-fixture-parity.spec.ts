@@ -12,17 +12,17 @@ interface CorpusEntry {
 }
 
 const workspace = join(import.meta.dirname, '../../..')
-const harness = join(workspace, 'opensource/deepseek-harness')
+const harness = join(workspace, 'opensource/deepseek-harness/deepseek-harness-master')
 const corpus = JSON.parse(readFileSync(
   join(import.meta.dirname, 'fixtures/upstream-session-corpus.json'),
   'utf8',
 )) as CorpusEntry[]
 const replay = await import(new URL(
-  '../../../opensource/deepseek-harness/packages/test-support/llm-replay/src/index.ts',
+  '../../../opensource/deepseek-harness/deepseek-harness-master/packages/test-support/llm-replay/src/index.ts',
   import.meta.url,
 ).href) as { parseSessionLog(text: string): RuntimeEvent[] }
 const sessionRuntime = await import(new URL(
-  '../../../opensource/deepseek-harness/packages/core/session/src/index.ts',
+  '../../../opensource/deepseek-harness/deepseek-harness-master/packages/core/session/src/index.ts',
   import.meta.url,
 ).href) as { KNOWN_SESSION_EVENT_TYPES: ReadonlySet<string> }
 

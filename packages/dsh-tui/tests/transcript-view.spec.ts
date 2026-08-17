@@ -58,7 +58,7 @@ describe('transcript entries', () => {
     const entries = buildTranscriptEntries([tool({ callId: 'ok', id: 'tool:ok', output: longOutput })], generic)
     const lines = transcriptLines(entries)
     expect(lines).toHaveLength(2)
-    expect(lines[1]?.text).toContain('hidden line(s), Ctrl+O to expand')
+    expect(lines[1]?.text).toContain('+20 lines (ctrl+o to expand)')
     expect(transcriptLines(entries, new Set(['tool:ok']))).toHaveLength(21)
   })
 

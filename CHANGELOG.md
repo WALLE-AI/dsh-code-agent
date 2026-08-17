@@ -23,6 +23,117 @@ enforced by `npm run check:upstream`.
 
 ### Added
 
+- **Testable key bindings** — the 160-line `useInput` cascade became a pure
+  resolver in `src/keymap.ts`. The Ink layer translates a keypress into a
+  renderer-independent event and dispatches the action the resolver returns, so
+  binding precedence, graded `Esc` and modal key containment are unit tested
+  without a terminal. `KEY_BINDINGS` is the documented table, and a drift test
+  fails when a binding is missing from the user guide.
+- **Caret editing in the composer** — the draft is a string plus a code-point
+  cursor. `←`/`→`, `Ctrl+←`/`Ctrl+→`, `Ctrl+A`/`Ctrl+E`, `Ctrl+W`, `Ctrl+U`,
+  `Ctrl+K` and `Alt+Backspace` all edit in place; `↑`/`↓` move between lines of a
+  multi-line draft before falling through to the history. The rendered caret
+  follows the edit and the visible window scrolls to keep it on screen.
+- **Draft completion** — `/` completes a command name at the start of the draft
+  and `@` completes a workspace path anywhere in it, matching on relative path
+  or basename. `Tab` or `Enter` accepts, `Esc` dismisses the list for that token
+  only. Accepting replaces just the matched token; a directory keeps the caret
+  inside it. The path walk is bounded, skips VCS and dependency directories, and
+  refuses a prefix that climbs out of the workspace.
+- **Persistent draft history** — submitted drafts are appended to
+  `$DSH_HOME/tui/history.jsonl` (200 entries) and seed the next session's `↑`
+  walk. Parsing is total: a truncated tail costs one entry, and an unwritable
+  home costs the history rather than the session.
+- **Working line** — while the Agent is working, one line above the composer
+  carries a turning frame, a verb, the turn's elapsed time and, past thirty
+  seconds, the output token count. The verb is chosen from the turn index rather
+  than at random, so a frame stays reproducible from its inputs. It outranks the
+  todo panel in the row budget, being the only thing that says the run is alive.
+- **Resolved model in the status row** — the Harness already knew which model it
+  had selected; the adapter now reports it through a hook, so the row shows the
+  real route rather than only an explicit `--model`. Neither it nor the
+  permission preset is ever dropped when the row is squeezed.
+- **Session browser** — `Ctrl+R` opens a screen instead of an overlay: it
+  replaces the conversation, so nothing underneath can be repainted or bleed
+  through, and it is rendered as an early return after every hook has run.
+  Typing filters, with no mode to enter — the list *is* the result. The cursor
+  is a session **id**, not a row number, so filtering can never silently move it
+  onto a different session. `Enter` resumes and the screen stays open until the
+  resume lands; `Esc` peels one layer per press, clearing the filter before
+  closing. Wide terminals get a preview beside the list.
+- **Startup banner** — a fresh session opens with a framed title, the directory
+  and branch, the model when the run was given one, and a line of tips. It is
+  stored as transcript rows rather than a pinned region, so it scrolls away with
+  the history and costs nothing thereafter, and it re-flows on resize. Facts the
+  profile was not told are left out rather than filled with a placeholder.
+- **Speaker marks and the tool gutter** — the assistant gets a `●`, reasoning
+  folds behind `∴ Thinking` instead of a bare `~`, and a tool card's body hangs
+  under a ` ⎿ ` gutter with its continuation rows aligned, so a card reads as one
+  block. All four have ASCII stand-ins.
+- **Fold limits per card kind** — three body rows for prose, eight for a diff,
+  and never a fold that hides a single row, since the marker saying so would
+  cost that row back.
+- **Shared overlay pane** — the command palette, the session picker and the new
+  shortcut sheet render through one model with one window rule. The window is
+  computed from a *row* budget, growing alternately from the focus and taking
+  the shorter side, which replaces two copies of an `index - 2` slice that
+  pushed the focused row off the end of a long list. A property test asserts the
+  focus is never dropped, for any list size, focus and budget.
+- **Approval panel** — the one-line `[y/N]` prompt became a panel that shows the
+  first rows of the pending call's own card, so the decision is made against the
+  command or the diff rather than a joined summary. `↑`/`↓` move between allow
+  and reject with reject highlighted by default; confirmation requires a bare
+  `Enter`, so a modifier held over from the previous keystroke cannot answer a
+  prompt that gates a tool run. `y`/`n` still answer directly. A questionnaire
+  waiting behind an approval is now reported rather than silently dropped.
+- **Shortcut sheet** — `?` on an empty draft shows the bindings, generated from
+  the same table the resolver uses, so it cannot drift from the real keymap.
+- **Permission mode cycling** — `Shift+Tab` walks the presets the session
+  reports, going through the official `/permission` command so the Harness stays
+  the source of truth.
+- **Per-row tone** — `TranscriptLine.tone` was per entry, so a diff's added and
+  removed lines were painted in the card's single colour. Card bodies are now
+  toned rows and rows carry styled runs, which is what finally makes red/green
+  diffs possible; context rows stay untoned and inherit the card.
+- **Semantic palette** — `theme.ts` maps a tone to what the terminal can show:
+  muted hexes on truecolor, ANSI names below it so the user's own scheme still
+  applies, and nothing at all under `NO_COLOR` or `--no-color`. The capability
+  probe's `colorLevel`, which used to be collapsed to a boolean, now reaches the
+  renderer.
+- **Glyph fallback** — status and structure markers come from a glyph set chosen
+  by the `unicode` capability, so a legacy console shows `+ x ! >` instead of
+  replacement boxes.
+- **Markdown styling** — assistant prose gets fenced code blocks, headings,
+  quotes, list markers, inline code and bold. It is line-oriented rather than a
+  parser, so it costs the same per streamed delta and an unterminated fence or
+  `**` just stays plain until it closes; a plain-text fast path and a size
+  ceiling keep a pathological message off the frame budget. The markup is never
+  hidden, so each styled row's text still equals its source exactly.
+- **Word wrapping** — rows wrap at word boundaries instead of being truncated at
+  the terminal edge, breaking oversized tokens and breaking CJK between cells.
+  Wrapping happens in the store, so a resize re-flows the transcript. Rows are
+  memoized per entry against width and fold state: a streamed delta re-wraps one
+  entry (~1 ms on an 8000-row transcript) rather than all of them, which a new
+  performance spec pins.
+- **Running feedback** — a call that is still open shows a turning frame in
+  place of its status glyph plus the time it has been running. Start times are
+  kept in the store, not the projection, so the durable event fold stays
+  replay-deterministic and a resumed call correctly shows no elapsed time. The
+  frame clock is mounted only while something is running: a settled session
+  holds no interval, which a test asserts by watching the frame count go quiet.
+- **Status row rebuilt** — the single joined string became a segment model with
+  an explicit drop order, a context-pressure bar on its own row, and a hint
+  field that says what the next key does (`esc to interrupt` while running,
+  `paused · N unread` when scrolled away). Narrow terminals drop whole fields
+  from the least valuable up instead of truncating mid-word; the permission
+  preset is never dropped. The branch and directory are now shown, the branch
+  read straight from `.git/HEAD` rather than by spawning `git`.
+- **Goal and todo panel** — the goal, todo counts and active item the projection
+  has always computed are finally rendered, above the composer, collapsing to
+  one line when the work is done and to nothing when there is none.
+- **Unicode capability detection** — a legacy Windows console, `TERM=dumb` or a
+  non-UTF-8 locale now yields `unicode: false`, which selects ASCII stand-ins
+  and a static status glyph instead of frames the terminal cannot draw.
 - **Terminal safety layer** — ANSI, OSC, DCS, C0/C1, DEL and bidi-spoofing marks
   are stripped from every untrusted string before it reaches the screen;
   East-Asian, emoji and combining-mark widths drive truncation and wrapping.
@@ -89,8 +200,28 @@ enforced by `npm run check:upstream`.
   typecheck, tests, real profile, PTY matrix, resume, performance budgets,
   packed-artifact install and durability soak.
 
+### Changed
+
+- The gate scripts, `upstream-compat.json`, the fixture-parity spec and the
+  adapter's source fallback all pointed one directory above the vendored Harness
+  root, so every terminal gate failed to boot while `pnpm tui` worked. All of
+  them now resolve `opensource/deepseek-harness/deepseek-harness-master`.
+- Inline `` `code` `` and `**bold**` keep their delimiters. Consuming them left
+  the styled runs no longer summing to the row's own text, which is the string
+  that drives wrapping, width and search — a property test caught it on `` ` ` ``.
+
+- `Ctrl+E` now jumps to the end of the draft line, the readline binding it
+  displaces nothing else could carry: Ink 5 resolves `Home`/`End` to a key name
+  it then blanks out, so the TUI never receives them. Opening a tool card's
+  location in `$EDITOR` moved to `Ctrl+X`.
+- `Esc` clears a non-empty draft before it arms a cancellation, so a half-typed
+  message is no longer one keystroke away from stopping the run.
+
 ### Fixed
 
+- Bracketed paste was disabled on exit but never enabled on entry, so pastes
+  arrived as ordinary keystrokes and were only cleaned up defensively. The
+  terminal guard now sends `?2004h` alongside the alternate-screen switch.
 - Ink unmounts on the first `Ctrl+C` by default, which would have bypassed the
   bounded shutdown entirely. The renderer now runs with `exitOnCtrlC: false`, so
   the first press arms the confirmation and the second one runs the full

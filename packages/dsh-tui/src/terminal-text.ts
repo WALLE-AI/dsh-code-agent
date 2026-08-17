@@ -133,7 +133,14 @@ export function truncateToWidth(text: string, columns: number): string {
   return columns > 1 ? `${cut}…` : cut
 }
 
-/** Hard-wrap a sanitized string into rows of at most `columns` cells. */
+/**
+ * Hard-wrap a sanitized string into rows of at most `columns` cells.
+ *
+ * Greedy and per logical line, which is what lets the composer locate its caret
+ * by wrapping only the text before it: the prefix produces the same rows the
+ * whole draft does. {@link wrapWords} deliberately does not have that property,
+ * so the two must not be swapped for one another.
+ */
 export function wrapToWidth(text: string, columns: number): readonly string[] {
   if (columns <= 0) return ['']
   const rows: string[] = []
@@ -155,6 +162,90 @@ export function wrapToWidth(text: string, columns: number): readonly string[] {
       row += cell
     }
     rows.push(row)
+  }
+  return rows
+}
+
+/**
+ * Break a sanitized line into wrap chunks.
+ *
+ * A chunk is a run of spaces, a single wide cell, or a run of narrow non-space
+ * characters. Wide cells stand alone because CJK text has no spaces to break
+ * at, and refusing to break between two ideographs would push every long
+ * sentence into one hard cut.
+ */
+function wrapChunks(line: string): readonly string[] {
+  const chunks: string[] = []
+  let current = ''
+  let currentKind: 'space' | 'word' | undefined
+  for (const character of line) {
+    const width = codePointWidth(character.codePointAt(0) ?? 0)
+    if (width > 1) {
+      if (current !== '') chunks.push(current)
+      current = ''
+      currentKind = undefined
+      chunks.push(character)
+      continue
+    }
+    const kind = /\s/.test(character) ? 'space' : 'word'
+    if (kind !== currentKind && current !== '') {
+      chunks.push(current)
+      current = ''
+    }
+    currentKind = kind
+    current += character
+  }
+  if (current !== '') chunks.push(current)
+  return chunks
+}
+
+/**
+ * Wrap a sanitized string at word boundaries, falling back to a hard break for
+ * a single token wider than the row. Trailing spaces at a break are dropped —
+ * they would otherwise show as a ragged right edge or push the row over budget.
+ */
+export function wrapWords(text: string, columns: number): readonly string[] {
+  if (columns <= 0) return ['']
+  const rows: string[] = []
+  // Every completed row loses its trailing spaces: they are the break itself,
+  // and keeping them would show as a ragged right edge.
+  const push = (row: string): void => { rows.push(row.replace(/\s+$/, '')) }
+  for (const line of text.split('\n')) {
+    let row = ''
+    let width = 0
+    for (const chunk of wrapChunks(line)) {
+      const chunkWidth = displayWidth(chunk)
+      if (width + chunkWidth <= columns) {
+        row += chunk
+        width += chunkWidth
+        continue
+      }
+      // Whitespace never starts a row: the break itself is the separator.
+      if (/^\s+$/.test(chunk)) {
+        push(row)
+        row = ''
+        width = 0
+        continue
+      }
+      if (chunkWidth <= columns) {
+        push(row)
+        row = chunk
+        width = chunkWidth
+        continue
+      }
+      // A token too wide for any row is cut, reusing the hard-wrap rules so an
+      // oversized single cell is still replaced rather than overflowing.
+      if (width > 0) {
+        push(row)
+        row = ''
+        width = 0
+      }
+      const pieces = wrapToWidth(chunk, columns)
+      for (const piece of pieces.slice(0, -1)) push(piece)
+      row = pieces.at(-1) ?? ''
+      width = displayWidth(row)
+    }
+    push(row)
   }
   return rows
 }

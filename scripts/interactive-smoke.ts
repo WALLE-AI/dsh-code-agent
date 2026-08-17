@@ -5,7 +5,7 @@ import { dirname, join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 
 const root = resolve(import.meta.dirname, '..')
-const harness = join(root, 'opensource/deepseek-harness')
+const harness = join(root, 'opensource/deepseek-harness/deepseek-harness-master')
 const wide = process.argv.includes('--wide')
 const questionScenario = process.argv.includes('--question')
 const unicodeScenario = process.argv.includes('--unicode')
@@ -14,6 +14,9 @@ const followupText = unicodeScenario ? unicodeFollowup : 'follow-up from compose
 const followupWire = unicodeScenario
   ? `\u001B[200~${unicodeFollowup}\u001B[201~`
   : followupText
+// The status row's idle hint is the readiness marker: it is shown only when the
+// Agent is idle, so seeing it means the composer will accept a follow-up.
+const IDLE_HINT = 'ctrl+p commands'
 const normalizeScreen = (value: string): string => value
   .replace(/\[[0-?]*[ -/]*[@-~]/g, '')
   .replace(/\s+/g, '')
@@ -146,12 +149,12 @@ const dataSubscription = child.onData((data) => {
     answered = true
     writeSoon('\r')
   }
-  if (wide && answered && !resizedNarrow && transcript.includes('Enter send')) {
+  if (wide && answered && !resizedNarrow && transcript.includes(IDLE_HINT)) {
     resizedNarrow = true
     narrowResizeOffset = transcript.length
     child.resize(80, 24)
   }
-  if (answered && !followupSent && transcript.includes('Enter send')
+  if (answered && !followupSent && transcript.includes(IDLE_HINT)
     && (!wide || (resizedNarrow && transcript.length > narrowResizeOffset))) {
     followupSent = true
     followupOffset = transcript.length
@@ -181,7 +184,7 @@ const dataSubscription = child.onData((data) => {
     helpSent = true
     child.write('/help')
   }
-  if (helpSent && !helpEnterSent && transcript.slice(followupOffset).includes('/help')) {
+  if (helpSent && !helpEnterSent && transcript.slice(followupOffset).includes('> /help')) {
     helpEnterSent = true
     child.write('\r')
   }
@@ -190,7 +193,7 @@ const dataSubscription = child.onData((data) => {
     quitOffset = transcript.length
     child.write('/quit')
   }
-  if (quitSent && !quitEnterSent && transcript.slice(quitOffset).includes('/quit')) {
+  if (quitSent && !quitEnterSent && transcript.slice(quitOffset).includes('> /quit')) {
     quitEnterSent = true
     child.write('\r')
   }

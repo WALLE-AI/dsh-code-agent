@@ -1,0 +1,70 @@
+/**
+ * Startup banner.
+ *
+ * Shown once at the top of a fresh transcript and then left to scroll away with
+ * the rest of the history — it is a greeting, not a permanent header, so it
+ * must not hold rows on every frame.
+ *
+ * It only states what the session actually knows. A model line appears when the
+ * run was given one; there is no placeholder for facts the profile has not been
+ * told, because a confident wrong value is worse than a missing line.
+ */
+
+import type { GlyphSet } from './glyphs.ts'
+import type { DetailLine } from './styling.ts'
+import { truncateToWidth } from './terminal-text.ts'
+
+/** Below this the frame is dropped and only the title survives. */
+const FRAME_MIN_COLUMNS = 44
+
+export interface SplashFacts {
+  readonly title: string
+  /** Model route, when the run was started with one. */
+  readonly model?: string
+  readonly directory?: string
+  readonly branch?: string
+  readonly tips: readonly string[]
+}
+
+function frame(title: string, columns: number, unicode: boolean): readonly DetailLine[] {
+  const inner = Math.min(columns - 4, Math.max(title.length + 2, 28))
+  const pad = ' '.repeat(Math.max(0, inner - title.length - 1))
+  const [tl, tr, bl, br, h, v] = unicode
+    ? ['╭', '╮', '╰', '╯', '─', '│']
+    : ['+', '+', '+', '+', '-', '|']
+  const rule = h.repeat(inner)
+  return [
+    { text: `${tl}${rule}${tr}`, tone: 'heading' },
+    { text: `${v} ${title}${pad}${v}`, tone: 'heading' },
+    { text: `${bl}${rule}${br}`, tone: 'heading' },
+  ]
+}
+
+/**
+ * Build the banner rows.
+ *
+ * @param columns - terminal width; a narrow terminal loses the frame first,
+ *   then the tips, and finally keeps only the title.
+ */
+export function buildSplash(
+  facts: SplashFacts,
+  columns: number,
+  glyphs: GlyphSet,
+): readonly DetailLine[] {
+  if (columns <= 0) return []
+  const unicode = glyphs.rule !== '--'
+  const rows: DetailLine[] = columns >= FRAME_MIN_COLUMNS
+    ? [...frame(facts.title, columns, unicode)]
+    : [{ text: facts.title, tone: 'heading' }]
+
+  const where = [facts.directory, facts.branch]
+    .filter((part): part is string => part !== undefined && part !== '')
+    .join(` ${glyphs.marker} `)
+  if (facts.model !== undefined) rows.push({ text: facts.model, tone: 'badge' })
+  if (where !== '') rows.push({ text: where, tone: 'system' })
+  // Tips are the first thing to go: they are the least durable information here.
+  if (facts.tips.length > 0 && columns >= FRAME_MIN_COLUMNS) {
+    rows.push({ text: `Tip: ${facts.tips.join(` ${glyphs.marker} `)}`, tone: 'system' })
+  }
+  return rows.map(row => ({ ...row, text: truncateToWidth(row.text, columns) }))
+}

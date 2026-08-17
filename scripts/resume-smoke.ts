@@ -11,7 +11,7 @@ import { dirname, join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 
 const root = resolve(import.meta.dirname, '..')
-const harness = join(root, 'opensource/deepseek-harness')
+const harness = join(root, 'opensource/deepseek-harness/deepseek-harness-master')
 const firstTask = 'remember the resume marker alpha'
 const followup = 'continue after resume'
 

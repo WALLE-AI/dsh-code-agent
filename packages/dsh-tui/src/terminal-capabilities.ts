@@ -10,6 +10,8 @@ export interface TerminalCapabilities {
   readonly columns: number
   readonly rows: number
   readonly colorLevel: ColorLevel
+  /** The terminal can be trusted with box-drawing and braille glyphs. */
+  readonly unicode: boolean
   readonly alternateScreen: boolean
   readonly hyperlinks: boolean
   readonly multiplexer?: 'tmux' | 'screen'
@@ -76,8 +78,18 @@ export function detectTerminal(
     notes.push('TERM is unset or dumb; the alternate screen buffer is disabled')
   }
 
-  if (platform === 'win32' && !truthy(env.WT_SESSION)) {
+  const legacyWindows = platform === 'win32' && !truthy(env.WT_SESSION)
+  if (legacyWindows) {
     notes.push('legacy Windows console detected; ConPTY resize and Unicode support may be limited')
+  }
+
+  // A non-UTF-8 locale renders wide glyphs as replacement boxes, which is worse
+  // than the ASCII fallback; `TERM=dumb` cannot place them at all.
+  const encoding = `${env.LC_ALL ?? ''}${env.LC_CTYPE ?? ''}${env.LANG ?? ''}`.toLowerCase()
+  const unicode = !legacyWindows && term !== 'dumb'
+    && (encoding === '' || encoding.includes('utf-8') || encoding.includes('utf8'))
+  if (interactive && !unicode) {
+    notes.push('terminal or locale cannot show wide glyphs; ASCII stand-ins are used')
   }
 
   return Object.freeze({
@@ -85,6 +97,7 @@ export function detectTerminal(
     columns,
     rows,
     colorLevel,
+    unicode,
     alternateScreen,
     hyperlinks: colorLevel !== 'none' && multiplexer === undefined && !remote,
     ...(multiplexer === undefined ? {} : { multiplexer }),

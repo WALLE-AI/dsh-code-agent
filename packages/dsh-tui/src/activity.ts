@@ -3,7 +3,7 @@
  * session projections; the TUI never keeps a second task or permission state.
  */
 
-import { sanitizeLine, truncateToWidth } from './terminal-text.ts'
+import { sanitizeLine } from './terminal-text.ts'
 
 export interface PermissionOption {
   readonly value: string
@@ -114,27 +114,5 @@ export interface ActivityCounters {
   readonly approvals: number
 }
 
-/** One-line status summary bounded to the available columns. */
-export function activityStatusLine(
-  summary: ActivitySummary,
-  counters: ActivityCounters,
-  columns: number,
-): string {
-  const parts: string[] = []
-  if (summary.permission !== undefined) parts.push(summary.permission.current)
-  if (summary.planActive) parts.push('plan')
-  if (summary.todos !== undefined) {
-    parts.push(`todo ${String(summary.todos.done)}/${String(summary.todos.total)}`)
-  }
-  parts.push(`tools ${String(counters.tools)}`)
-  if (counters.filesAdded > 0 || counters.filesRemoved > 0) {
-    parts.push(`files +${String(counters.filesAdded)} -${String(counters.filesRemoved)}`)
-  }
-  if (counters.approvals > 0) parts.push(`approvals ${String(counters.approvals)}`)
-  if (summary.subagent !== undefined) parts.push(`subagent ${summary.subagent}`)
-  if (summary.context?.percent !== undefined) parts.push(`ctx ${String(summary.context.percent)}%`)
-  if (summary.tokens !== undefined) {
-    parts.push(`tok ${String(summary.tokens.input)}/${String(summary.tokens.output)}`)
-  }
-  return truncateToWidth(parts.join(' · '), columns)
-}
+// The status row itself is built in `status-line.ts`, which folds this summary
+// into prioritized segments the layout can drop one at a time.

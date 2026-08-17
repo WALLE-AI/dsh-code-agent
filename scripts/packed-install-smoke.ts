@@ -14,7 +14,7 @@ import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 
 const root = resolve(import.meta.dirname, '..')
-const harness = join(root, 'opensource/deepseek-harness')
+const harness = join(root, 'opensource/deepseek-harness/deepseek-harness-master')
 const packageDir = join(root, 'packages/dsh-tui')
 
 const linkType = process.platform === 'win32' ? 'junction' : 'dir'

@@ -1,9 +1,14 @@
 import { describe, expect, it } from 'vitest'
 import type { ToolNode, ToolPresentation } from '../src/contracts.ts'
 import { buildFileDiff } from '../src/diff-view.ts'
-import { buildToolCard } from '../src/tool-card.ts'
+import { buildToolCard, type ToolCardView } from '../src/tool-card.ts'
 
 const ESC = String.fromCharCode(0x1b)
+
+/** The plain text of a card body, for assertions that do not care about tone. */
+function rows(card: ToolCardView): readonly string[] {
+  return card.body.map(line => line.text)
+}
 
 function node(overrides: Partial<ToolNode> = {}): ToolNode {
   return {
@@ -22,7 +27,7 @@ describe('terminal cards', () => {
     expect(card).toMatchObject({
       card: 'terminal', title: 'pnpm vitest run', subtitle: 'cwd /repo  run tests', badge: 'exit 0',
     })
-    expect(card.body).toEqual(['b', 'c'])
+    expect(rows(card)).toEqual(['b', 'c'])
     expect(card.dropped).toBe(1)
   })
 
@@ -37,7 +42,7 @@ describe('terminal cards', () => {
       result: { card: 'terminal', output: `${ESC}]0;title${String.fromCharCode(7)}done`, signal: 'SIGTERM' },
     })
     expect(killed.badge).toBe('signal SIGTERM')
-    expect(killed.body).toEqual(['done'])
+    expect(rows(killed)).toEqual(['done'])
   })
 
   it('bounds a very large output by bytes and rows', () => {
@@ -48,7 +53,7 @@ describe('terminal cards', () => {
     }, { maxBodyLines: 10, maxInlineBytes: 1_000 })
     expect(card.body).toHaveLength(10)
     expect(card.dropped).toBeGreaterThan(0)
-    expect(card.body.at(-1)).toBe('line-4999')
+    expect(rows(card).at(-1)).toBe('line-4999')
   })
 })
 
@@ -65,9 +70,15 @@ describe('diff cards', () => {
     expect(card).toMatchObject({ card: 'diff', badge: '+1 -1' })
     expect(card.diffStats).toEqual({ added: 1, removed: 1 })
     expect(card.locations).toEqual([{ path: 'src/a.ts' }])
-    expect(card.body[0]).toBe('src/a.ts  +1 -1')
-    expect(card.body.some(line => line.includes('-') && line.includes('two'))).toBe(true)
-    expect(card.body.some(line => line.trimStart().startsWith('+') && line.includes('2'))).toBe(true)
+    expect(card.body[0]).toEqual({ text: 'src/a.ts  +1 -1', tone: 'heading' })
+    // Added and removed rows carry their own tone, so the view can colour them
+    // independently of the card they belong to.
+    expect(card.body.find(line => line.text.includes('two')))
+      .toMatchObject({ tone: 'diff-remove' })
+    expect(card.body.find(line => line.text.trimStart().startsWith('+') && line.text.includes('2')))
+      .toMatchObject({ tone: 'diff-add' })
+    // Context rows stay untoned and inherit the card's colour.
+    expect(card.body.find(line => line.text.includes('three'))?.tone).toBeUndefined()
   })
 
   it('marks created and binary files', () => {
@@ -101,7 +112,7 @@ describe('search, read, and generic cards', () => {
       },
     })
     expect(card).toMatchObject({ card: 'search', badge: '17 matches (capped)' })
-    expect(card.body).toEqual(['src/a.ts', '  12: await flush()'])
+    expect(rows(card)).toEqual(['src/a.ts', '  12: await flush()'])
     expect(card.locations).toEqual([{ path: 'src/a.ts', line: 12 }])
   })
 
@@ -111,7 +122,7 @@ describe('search, read, and generic cards', () => {
       result: { card: 'search', shape: 'paths', total: 2, truncated: false, paths: ['a.ts', 'b.ts'] },
     })
     expect(card.badge).toBe('2 paths')
-    expect(card.body).toEqual(['a.ts', 'b.ts'])
+    expect(rows(card)).toEqual(['a.ts', 'b.ts'])
   })
 
   it('numbers read windows and points the editor at the offset', () => {
@@ -123,7 +134,7 @@ describe('search, read, and generic cards', () => {
       },
     })
     expect(card).toMatchObject({ card: 'read', subtitle: 'src/a.ts', badge: '1 of 400 lines' })
-    expect(card.body).toEqual(['   10 const a = 1'])
+    expect(rows(card)).toEqual(['   10 const a = 1'])
     expect(card.locations).toEqual([{ path: 'src/a.ts', line: 10 }])
   })
 
@@ -132,7 +143,7 @@ describe('search, read, and generic cards', () => {
       call: { card: 'generic', title: 'Custom tool', rawInput: { path: 'a.ts' } },
     })
     expect(generic).toMatchObject({ card: 'generic', title: 'Custom tool', subtitle: '{"path":"a.ts"}' })
-    expect(generic.body).toEqual(['done'])
+    expect(rows(generic)).toEqual(['done'])
 
     const malformed = buildToolCard(node({ output: 'raw' }), {
       call: { card: 'diff', title: 'Broken' },

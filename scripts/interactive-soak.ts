@@ -24,7 +24,7 @@ function integerOption(name: string, fallback: number, minimum: number): number 
 const durationMs = integerOption('duration-ms', DEFAULT_DURATION_MS, 1_000)
 const intervalMs = integerOption('interval-ms', DEFAULT_INTERVAL_MS, 0)
 const root = resolve(import.meta.dirname, '..')
-const harness = join(root, 'opensource/deepseek-harness')
+const harness = join(root, 'opensource/deepseek-harness/deepseek-harness-master')
 const marker = 'phase two soak response'
 const normalize = (text: string): string => text
   .replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, '')
@@ -170,7 +170,8 @@ const responseReady = (): boolean => {
   const normalized = normalize(phaseOutput)
   return server.requests.length > requestBaseline
     && normalized.includes(normalize(marker))
-    && normalized.includes('Entersend')
+    // The status row's idle hint appears only once the Agent has settled.
+    && normalized.includes(normalize('ctrl+p commands'))
 }
 
 const responseCompleted = (): void => {

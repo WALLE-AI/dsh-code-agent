@@ -89,6 +89,8 @@ export interface HarnessHooks {
   question(questions: readonly QuestionItem[], signal?: AbortSignal): Promise<QuestionAnswer>
   /** Report a diagnosable runtime fault that the user must see. */
   diagnostic(message: string): void
+  /** The model route the Harness actually resolved for this run. */
+  model(route: { provider: string; model: string; reasoningEffort?: string }): void
   ready(controls: TuiSessionControls): void
 }
 
@@ -103,7 +105,7 @@ export interface TuiSessionControls {
 export const NOT_DURABLE_EXIT_CODE = 74
 
 function upstream(relative: string): string {
-  return new URL(`../../../opensource/deepseek-harness/${relative}`, import.meta.url).href
+  return new URL(`../../../opensource/deepseek-harness/deepseek-harness-master/${relative}`, import.meta.url).href
 }
 
 /**
@@ -465,7 +467,10 @@ export async function createHarnessAgentController(
   await loader?.await()
   const harnessServices = services(ctx)
   const runtime = await loadRuntime()
+  // The resolved selection, not the flag: an unset --model still has an answer,
+  // and it is the Harness's, not ours to guess.
   const selection = { ...harnessServices.defaultModel.currentSelection(), ...override }
+  hooks.model(selection)
   const setup = setupAgent(runtime, selection, hooks)
   const options = (identity: Record<string, unknown>): Record<string, unknown> => ({
     ...identity,

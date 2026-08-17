@@ -1,11 +1,13 @@
 /** Upstream-neutral types shared by the runtime projection and Ink view. */
 
 import type { ActivityCounters, ActivitySummary } from './activity.ts'
+import type { FileCandidate } from './draft-completion.ts'
 import type { TuiSessionSummary } from './session-selector.ts'
 import type { TranscriptEntry, TranscriptLine } from './transcript-view.ts'
 
 export type {
-  ActivityCounters, ActivitySummary, TranscriptEntry, TranscriptLine, TuiSessionSummary,
+  ActivityCounters, ActivitySummary, FileCandidate,
+  TranscriptEntry, TranscriptLine, TuiSessionSummary,
 }
 
 export type AgentStatus = 'idle' | 'running' | 'closing' | 'starting'
@@ -158,6 +160,16 @@ export interface TuiSnapshot {
   counters: ActivityCounters
   /** Resume candidates, refreshed on demand by the session picker. */
   sessions: readonly TuiSessionSummary[]
+  /** Workspace paths, refreshed on demand while an `@` mention is being typed. */
+  files: readonly FileCandidate[]
+  /** Drafts submitted in earlier sessions, oldest first. */
+  history: readonly string[]
+  /** Where the session is running, detected once at startup. */
+  workspace: { readonly branch?: string; readonly directory?: string }
+  /** The model route the Harness resolved for this run, once it is known. */
+  model?: string
+  /** Which turn is in flight and when it began, for the working line. */
+  turn: { readonly index: number; readonly startedAtMs: number }
   /** True when retained history exists above the rendered window. */
   hasMoreHistory: boolean
   approval?: ApprovalPrompt
@@ -177,6 +189,8 @@ export interface TuiActions {
   expandTranscript(): void
   /** Refresh the resume candidates into the store. */
   listSessions(): void
+  /** Refresh the workspace paths a mention prefix could complete to. */
+  listFiles(prefix: string): void
   /** Settle the current session and attach the selected one. */
   resumeSession(sessionId: string): void
 }

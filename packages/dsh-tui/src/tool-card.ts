@@ -5,7 +5,8 @@
  */
 
 import type { ToolNode, ToolPresentation, ToolRenderIntent } from './contracts.ts'
-import { buildFileDiff, diffRowText, type DiffOptions } from './diff-view.ts'
+import { buildFileDiff, diffRowText, type DiffOptions, type DiffRow } from './diff-view.ts'
+import { plainLines, type DetailLine, type RowTone } from './styling.ts'
 import { sanitizeLine, sanitizeText, truncateToWidth } from './terminal-text.ts'
 
 export type ToolCardKind = 'generic' | 'terminal' | 'diff' | 'search' | 'read' | 'web'
@@ -22,7 +23,7 @@ export interface ToolCardView {
   readonly subtitle?: string
   readonly badge?: string
   readonly status: ToolNode['status']
-  readonly body: readonly string[]
+  readonly body: readonly DetailLine[]
   /** Body rows the inline budget dropped; zero means the card is complete. */
   readonly dropped: number
   /** Line statistics for diff cards, so the status line can total file churn. */
@@ -39,6 +40,14 @@ export interface ToolCardOptions {
 }
 
 const DEFAULTS = { maxBodyLines: 200, maxInlineBytes: 256 * 1024, titleColumns: 160 } as const
+
+/** Diff markers carry their own tone; the surrounding card keeps its own. */
+const DIFF_TONE: Record<DiffRow['marker'], RowTone | undefined> = {
+  '+': 'diff-add',
+  '-': 'diff-remove',
+  '@': 'diff-hunk',
+  ' ': undefined,
+}
 
 function text(value: unknown): string | undefined {
   return typeof value === 'string' && value !== '' ? sanitizeLine(value) : undefined
@@ -74,7 +83,7 @@ function locationsOf(value: unknown): ToolCardLocation[] {
 }
 
 interface BoundedBody {
-  readonly lines: readonly string[]
+  readonly lines: readonly DetailLine[]
   readonly dropped: number
 }
 
@@ -91,10 +100,10 @@ function bounded(
   while (all.length > 0 && all.at(-1) === '') all.pop()
   const bytesDropped = value.length - clipped.length
   if (all.length <= options.maxBodyLines) {
-    return { lines: all, dropped: bytesDropped > 0 ? 1 : 0 }
+    return { lines: plainLines(all), dropped: bytesDropped > 0 ? 1 : 0 }
   }
   const lines = keep === 'tail' ? all.slice(-options.maxBodyLines) : all.slice(0, options.maxBodyLines)
-  return { lines, dropped: all.length - options.maxBodyLines }
+  return { lines: plainLines(lines), dropped: all.length - options.maxBodyLines }
 }
 
 function compact(value: unknown, columns: number): string | undefined {
@@ -159,11 +168,20 @@ function diffCard(
   const added = files.reduce((total, file) => total + file.added, 0)
   const removed = files.reduce((total, file) => total + file.removed, 0)
   const binary = files.some(file => file.binary)
-  const rows: string[] = []
+  const rows: DetailLine[] = []
   let dropped = 0
   for (const file of files) {
-    rows.push(`${file.path}${file.created ? ' (new file)' : ''}  +${String(file.added)} -${String(file.removed)}`)
-    for (const row of file.rows) rows.push(sanitizeLine(diffRowText(row, !file.binary)))
+    rows.push({
+      text: `${file.path}${file.created ? ' (new file)' : ''}  +${String(file.added)} -${String(file.removed)}`,
+      tone: 'heading',
+    })
+    for (const row of file.rows) {
+      const tone = DIFF_TONE[row.marker]
+      rows.push({
+        text: sanitizeLine(diffRowText(row, !file.binary)),
+        ...(tone === undefined ? {} : { tone }),
+      })
+    }
     dropped += file.droppedRows
   }
   const trimmed = rows.slice(0, options.maxBodyLines)
@@ -217,7 +235,7 @@ function searchCard(
     title: text(result.title) ?? text(call.title) ?? node.name,
     badge: `${String(total)} ${unit}${truncated ? ' (capped)' : ''}`,
     status: node.status,
-    body: trimmed,
+    body: plainLines(trimmed),
     dropped: Math.max(0, rows.length - options.maxBodyLines),
     locations,
     ...(node.parentCallId === undefined ? {} : { parentCallId: node.parentCallId }),
@@ -239,7 +257,7 @@ function readCard(
   const trimmed = rows.slice(0, options.maxBodyLines)
   const body = rows.length === 0
     ? bounded(contentText(result.content) ?? node.output, 'head', options)
-    : { lines: trimmed, dropped: Math.max(0, rows.length - options.maxBodyLines) }
+    : { lines: plainLines(trimmed), dropped: Math.max(0, rows.length - options.maxBodyLines) }
   return {
     callId: node.callId,
     card: 'read',
@@ -289,7 +307,7 @@ function webCard(
     title: text(result.title) ?? text(call.title) ?? node.name,
     badge: `${String(sources.length)} sources${truncated ? ' (capped)' : ''}`,
     status: node.status,
-    body: rows.slice(0, options.maxBodyLines),
+    body: plainLines(rows.slice(0, options.maxBodyLines)),
     dropped: Math.max(0, rows.length - options.maxBodyLines),
     locations: [],
     ...(node.parentCallId === undefined ? {} : { parentCallId: node.parentCallId }),

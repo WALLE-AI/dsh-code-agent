@@ -1,6 +1,8 @@
+import fc from 'fast-check'
 import { describe, expect, it } from 'vitest'
 import {
-  displayWidth, sanitizeLine, sanitizeText, truncateToWidth, wrapToWidth,
+  codePointWidth, displayWidth, sanitizeLine, sanitizeText, truncateToWidth,
+  wrapToWidth, wrapWords,
 } from '../src/terminal-text.ts'
 
 const ESC = String.fromCharCode(0x1b)
@@ -80,5 +82,54 @@ describe('terminal width', () => {
     for (const row of wrapToWidth('修复问题abc', 5)) {
       expect(displayWidth(row)).toBeLessThanOrEqual(5)
     }
+  })
+})
+
+describe('word wrapping', () => {
+  it('breaks between words rather than mid-token', () => {
+    expect(wrapWords('the quick brown fox jumps', 12))
+      .toEqual(['the quick', 'brown fox', 'jumps'])
+  })
+
+  it('drops the space it broke at instead of leaving a ragged edge', () => {
+    for (const row of wrapWords('alpha beta gamma delta', 11)) {
+      expect(row).toBe(row.trimEnd())
+    }
+  })
+
+  it('hard-breaks a token wider than the row', () => {
+    expect(wrapWords('a supercalifragilistic word', 8))
+      .toEqual(['a', 'supercal', 'ifragili', 'stic', 'word'])
+  })
+
+  it('breaks between wide cells, which carry no spaces to break at', () => {
+    expect(wrapWords('修复刷新竞态', 4)).toEqual(['修复', '刷新', '竞态'])
+  })
+
+  it('keeps every row inside the budget for any text and width', () => {
+    fc.assert(fc.property(
+      fc.string({ maxLength: 120 }),
+      fc.integer({ min: 1, max: 40 }),
+      (text, columns) => {
+        for (const row of wrapWords(sanitizeText(text), columns)) {
+          expect(displayWidth(row)).toBeLessThanOrEqual(columns)
+        }
+      },
+    ))
+  })
+
+  it('preserves every non-space character, in order', () => {
+    fc.assert(fc.property(
+      fc.string({ maxLength: 120 }),
+      fc.integer({ min: 1, max: 40 }),
+      (text, columns) => {
+        const source = sanitizeText(text)
+        // A hard break can substitute an oversized cell, so only compare when
+        // every cell fits the row.
+        fc.pre(Array.from(source).every(c => codePointWidth(c.codePointAt(0) ?? 0) <= columns))
+        const kept = (value: string): string => value.replace(/\s/g, '')
+        expect(kept(wrapWords(source, columns).join(''))).toBe(kept(source))
+      },
+    ))
   })
 })

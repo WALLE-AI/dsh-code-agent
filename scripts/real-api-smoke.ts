@@ -39,7 +39,7 @@ const baseURL = process.env.DEEPSEEK_BASE_URL
   ?? process.env.DEEPSEEK_URL
   ?? dotenv.DEEPSEEK_URL
   ?? 'https://api.deepseek.com'
-const harness = join(root, 'opensource/deepseek-harness')
+const harness = join(root, 'opensource/deepseek-harness/deepseek-harness-master')
 const ptyModule = await import('node-pty') as {
   spawn(file: string, args: string[], options: Record<string, unknown>): {
     onData(callback: (data: string) => void): { dispose(): void }

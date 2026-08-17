@@ -1,3 +1,6 @@
+import { appendFileSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { homedir } from 'node:os'
+import { basename, dirname, join, resolve, sep } from 'node:path'
 import { createInkView } from './app.tsx'
 import { ApprovalQueue } from './approval-queue.ts'
 import { QuestionQueue } from './question-queue.ts'
@@ -8,6 +11,11 @@ import {
   createDiagnosticLog, fileSink, silentDiagnosticLog, type DiagnosticLog,
 } from './diagnostic-log.ts'
 import { detachedSpawn, EditorLauncher } from './editor-launcher.ts'
+import { glyphSet } from './glyphs.ts'
+import { buildSplash } from './splash.ts'
+import {
+  historyLine, HISTORY_LIMIT, parseHistory, serializeHistory,
+} from './history-store.ts'
 import {
   executeHarnessTask, listHarnessSessions,
   type HarnessContext, type HarnessHooks, type HarnessRunRequest, type ModelOverride,
@@ -16,6 +24,8 @@ import { formatSessionRow, resolveSessionSelection, selectableSessions } from '.
 import { exitCodeFor, ShutdownCoordinator } from './shutdown.ts'
 import { TuiStore } from './state.ts'
 import { detectTerminal } from './terminal-capabilities.ts'
+import { resolveTheme } from './theme.ts'
+import { listWorkspaceFiles, type DirectoryEntry } from './workspace-files.ts'
 
 export const name = 'tui-runner'
 export const inject = [
@@ -64,6 +74,9 @@ class TerminalGuard {
     if (this.entered) return
     this.entered = true
     if (this.alternateScreen) this.output.write(`${CSI}?1049h`)
+    // Bracketed paste lets the composer tell a paste from typing, so multi-line
+    // clipboard text lands in the draft instead of submitting line by line.
+    this.output.write(`${CSI}?2004h`)
   }
 
   restore(): void {
@@ -73,6 +86,68 @@ class TerminalGuard {
     this.output.write(`${CSI}?25h${CSI}?2004l`)
     if (this.alternateScreen) this.output.write(`${CSI}?1049l`)
   }
+}
+
+/**
+ * Read the checked-out branch from `.git/HEAD`, walking up to the repository
+ * root. Reading the file rather than spawning `git` keeps startup free of a
+ * subprocess, and a detached HEAD or a missing repository simply yields nothing.
+ */
+function detectBranch(workspace: string): { branch?: string } {
+  let directory = workspace
+  for (;;) {
+    try {
+      const head = readFileSync(join(directory, '.git', 'HEAD'), 'utf8').trim()
+      const match = /^ref: refs\/heads\/(.+)$/.exec(head)
+      return match?.[1] === undefined ? {} : { branch: match[1] }
+    } catch {
+      const parent = dirname(directory)
+      if (parent === directory) return {}
+      directory = parent
+    }
+  }
+}
+
+/**
+ * Open the draft history file, tolerating every failure. History is a
+ * convenience: an unwritable home directory must not stop a session.
+ */
+function createDraftHistory(path: string): {
+  readonly entries: readonly string[]
+  record(draft: string): void
+} {
+  let entries: readonly string[] = []
+  let writable = true
+  try {
+    entries = parseHistory(readFileSync(path, 'utf8'))
+  } catch {
+    entries = []
+  }
+  return {
+    get entries() { return entries },
+    record(draft: string) {
+      if (!writable || draft.trim() === '' || entries.at(-1) === draft) return
+      entries = [...entries, draft].slice(-HISTORY_LIMIT)
+      try {
+        mkdirSync(dirname(path), { recursive: true })
+        // Rewrite once the bound is reached so the file cannot grow without end.
+        if (entries.length < HISTORY_LIMIT) appendFileSync(path, historyLine(draft))
+        else writeFileSync(path, serializeHistory(entries))
+      } catch {
+        // One failed write is enough: stop retrying on every submission.
+        writable = false
+      }
+    },
+  }
+}
+
+/** Render a model override the way it was written on the command line. */
+function formatModelRoute(model: ModelOverride): string | undefined {
+  const route = [model.provider, model.model]
+    .filter((part): part is string => part !== undefined && part !== '')
+    .join('/')
+  if (route === '') return undefined
+  return model.reasoningEffort === undefined ? route : `${route} · ${model.reasoningEffort}`
 }
 
 async function sessionsNotice(ctx: HarnessContext): Promise<string> {
@@ -104,6 +179,7 @@ async function run(ctx: HarnessContext, config: Config, exit: (code: number) => 
     ...(config.maxInlineOutputBytes === undefined
       ? {}
       : { maxInlineBytes: config.maxInlineOutputBytes }),
+    glyphs: glyphSet(capabilities.unicode),
   })
   const approvals = new ApprovalQueue(store)
   const questions = new QuestionQueue(store)
@@ -161,6 +237,33 @@ async function run(ctx: HarnessContext, config: Config, exit: (code: number) => 
   internals.stdin.on('end', onEndOfInput)
   internals.stdin.on('close', onEndOfInput)
 
+  // Draft history lives beside the session store so it follows $DSH_HOME.
+  const history = createDraftHistory(
+    join(process.env.DSH_HOME?.trim() ?? join(homedir(), '.dsh'), 'tui', 'history.jsonl'),
+  )
+  store.setHistory(history.entries)
+
+  const workspace = process.cwd()
+  const workspaceFacts = { directory: basename(workspace), ...detectBranch(workspace) }
+  store.setWorkspace(workspaceFacts)
+  // The banner states only what this run was actually told; an unset --model
+  // leaves the line out rather than guessing a default.
+  const model = config.model === undefined ? undefined : formatModelRoute(config.model)
+  store.setHeader(width => buildSplash({
+    title: 'DeepSeek Harness TUI',
+    ...(model === undefined ? {} : { model }),
+    ...workspaceFacts,
+    tips: ['/help for commands', 'Tab completes', '? for shortcuts'],
+  }, width, glyphSet(capabilities.unicode)))
+  // Mention completion never leaves the workspace: `resolve` on a joined path
+  // collapses any `..` the prefix smuggled in, and a result outside is dropped.
+  const workspaceReader = (relativePath: string): readonly DirectoryEntry[] => {
+    const target = resolve(workspace, relativePath)
+    if (target !== workspace && !target.startsWith(`${workspace}${sep}`)) return []
+    return readdirSync(target, { withFileTypes: true })
+      .map(entry => ({ name: entry.name, directory: entry.isDirectory() }))
+  }
+
   const actions: TuiActions = {
     cancel: () => { void shutdown.request('cancel') },
     decideApproval: (allowed) => {
@@ -180,6 +283,15 @@ async function run(ctx: HarnessContext, config: Config, exit: (code: number) => 
           store.setError(error instanceof Error ? error.message : String(error))
         })
     },
+    listFiles: (prefix) => {
+      try {
+        store.setFiles(listWorkspaceFiles(prefix, workspaceReader))
+      } catch {
+        // A mention menu is a convenience; an unreadable workspace just yields
+        // no candidates rather than an error row over the transcript.
+        store.setFiles([])
+      }
+    },
     resumeSession: (sessionId) => {
       if (closing || activeController === undefined) return
       pendingSwitch = { task: '', resumeSessionId: sessionId }
@@ -196,6 +308,7 @@ async function run(ctx: HarnessContext, config: Config, exit: (code: number) => 
     submit: (text) => {
       const controller = activeController
       if (closing) return
+      history.record(text)
       if (controller === undefined) return store.setError('session is not ready for input')
       // Steering must reach the running step now; queueing it behind the
       // current turn would turn it into an ordinary follow-up.
@@ -260,11 +373,14 @@ async function run(ctx: HarnessContext, config: Config, exit: (code: number) => 
     guard.enter()
     view = internals.createView(
       store, actions, internals.stdin, internals.stdout, internals.stderr,
-      (config.color ?? true) && capabilities.colorLevel !== 'none',
+      resolveTheme(capabilities.colorLevel, config.color ?? true),
       (region, message) => {
         diagnostics.record('render-failed', { region, message })
         store.setError(`${region} render failed: ${message}`)
       },
+      // A terminal that cannot draw the frames gets the static status glyph
+      // instead of a spinner that would only churn the screen.
+      capabilities.unicode,
     )
     if (capabilities.notes.length > 0) store.setNotice(capabilities.notes[0])
     if (resumeSessionId !== undefined) store.setNotice(`resumed session ${resumeSessionId}`)
@@ -284,6 +400,10 @@ async function run(ctx: HarnessContext, config: Config, exit: (code: number) => 
         return approvals.ask(input, signal)
       },
       question: (items, signal) => questions.ask(items, signal),
+      model: (route) => {
+        const text = formatModelRoute(route)
+        if (text !== undefined) store.setModel(text)
+      },
       diagnostic: (message) => {
         diagnostics.record('runtime-diagnostic', { message })
         store.setError(message)

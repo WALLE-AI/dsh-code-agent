@@ -50,18 +50,36 @@ fish.
 
 | Key | Action |
 |---|---|
-| `Enter` | Send the draft. With an approval open: `y` allows once, `n`/`Esc`/`Enter` rejects. |
+| `Enter` | Send the draft. |
 | `Ctrl+Enter` | Insert a newline instead of sending. |
-| `Esc` | First press arms cancellation, second press cancels the current run. |
-| `Ctrl+C` | Same two-step cancellation, then a bounded shutdown. |
+| `←` / `→` | Move the caret one character. |
+| `Ctrl+←` / `Ctrl+→` | Move the caret one word. |
+| `Ctrl+A` / `Ctrl+E` | Jump to the start or end of the current draft line. |
+| `Ctrl+W` | Delete the word before the caret. |
+| `Ctrl+U` / `Ctrl+K` | Delete to the start or end of the line. |
+| `Esc` | Clears a non-empty draft first. With nothing to clear, the first press arms cancellation and the second cancels the current run. |
+| `Ctrl+C` | Two-step cancellation, then a bounded shutdown. |
 | `PgUp` / `PgDn` | Scroll the transcript. Scrolling up pauses following and shows an unread count; at the oldest row `PgUp` pages more retained history in. |
-| `Tab` | Move focus between the composer and the transcript. In transcript focus, `j`/`k` or `↑`/`↓` scroll and `Enter` returns to the composer. |
+| `Tab` | Accept the open completion; otherwise move focus between the composer and the transcript. In transcript focus, `j`/`k` or `↑`/`↓` scroll and `Enter` returns to the composer. |
+| `/` | At the start of the draft, completes a command name. `Tab` or `Enter` accepts, `↑`/`↓` selects, `Esc` dismisses. |
+| `@` | Anywhere in the draft, completes a workspace path. A directory keeps the caret inside it so you can keep typing. |
+| `?` | Show the shortcut sheet, when the draft is empty. Any key closes it. |
+| `Shift+Tab` | Cycle the permission mode through the presets the session offers. |
 | `Ctrl+P` | Command palette: type to filter, `↑`/`↓` to select, `Enter` to prefill the draft, `Esc` to close. |
-| `Ctrl+R` | Session picker: `↑`/`↓` to select, `Enter` to switch to that session, `Esc` to close. |
+| `Ctrl+R` | Open the session browser, a full screen. Type to filter — the list *is* the search result, there is no mode to enter. `↑`/`↓` and `PgUp`/`PgDn` move the cursor, `Enter` resumes, `Esc` clears the filter and then closes. The cursor follows the session rather than the row number, so filtering cannot silently move it onto a different one. Wide terminals show a preview beside the list. |
 | `Ctrl+O` | Fold or unfold the tool card you are looking at. |
-| `Ctrl+E` | Open that card's first file location in `$EDITOR`. |
-| `↑` / `↓` | Draft history, or option selection inside a question. |
+| `Ctrl+X` | Open that card's first file location in `$EDITOR`. |
+| `↑` / `↓` | Move between lines of a multi-line draft, then walk the draft history. Inside a question, moves the option selection. |
 | `1`–`9`, `Space` | Pick a question option; `Space` toggles in multi-select. |
+
+`Home` and `End` are not bound: Ink 5 resolves both to a key name it then blanks
+out, so the TUI never sees them. `Ctrl+A` and `Ctrl+E` carry that duty. For the
+same reason the physical `Backspace` and `Delete` keys arrive as one key and both
+delete backwards; `Alt+Backspace` deletes the previous word.
+
+Drafts you send are kept in `$DSH_HOME/tui/history.jsonl` (200 entries) and are
+available to `↑` in the next session. A home directory that cannot be written
+costs the history, never the session.
 
 Pasted text is never sent automatically, even when it contains newlines.
 
@@ -71,23 +89,64 @@ new turn.
 
 ## 4. Reading the screen
 
+- A framed banner opens a fresh session with the directory, the branch, the
+  model when the run was given one, and a line of tips. It scrolls away with the
+  history rather than holding rows.
 - `> text` — your message.
-- plain text — the assistant, streamed.
-- `~ text` — reasoning summary, folded by default.
+- `● text` — the assistant, streamed.
+- `∴ Thinking` — reasoning, folded by default; `Ctrl+O` opens it.
 - `▸ / ✓ / ✗ / ⚠ name  [badge]` — a tool call: running, succeeded, failed, or
   interrupted. The badge carries `exit 0`, `signal SIGTERM`, `+12 -4`,
   `17 matches`, or `1 of 400 lines`, depending on what the tool declared.
+- A tool card's body hangs under a ` ⎿ ` gutter so the card reads as one block.
 - Indented tool rows are Code Mode sub-calls under their parent call.
 - `• text` — a durable marker (compaction, approval audit).
 - `── turn …` — the end of one turn and its reason.
 
-Long successful tool output folds automatically; failures stay open with their
-tail visible. Output beyond the inline budget is reported as
+Long successful tool output folds automatically — above three body rows, or
+eight for a diff, whose rows are the answer rather than a preview of it. A card
+never folds to hide a single row, because saying so would cost that row back.
+Failures stay open with their tail visible. Output beyond the inline budget is reported as
 `… N more line(s) not shown (output capped)` rather than silently dropped.
 
-The status row shows the permission preset, plan/todo state, tool count, file
-churn, approvals, subagent, context percentage, and token usage — all projected
-from the Harness session projections, never recomputed locally.
+Rows wrap at word boundaries rather than being cut at the terminal edge; a token
+wider than the row is broken, and CJK text breaks between characters. A resize
+re-flows the whole transcript.
+
+Diffs are coloured per row — added, removed and hunk headers each get their own
+tone rather than sharing the card's. Assistant prose gets light markdown
+styling: fenced code blocks, headings, quotes, list markers, `` `code` `` spans
+and `**bold**` runs. The markup is never hidden, so what you see is what the
+model actually wrote.
+
+Colour follows the terminal: muted hexes on a truecolor terminal, ANSI names on
+anything less so your own scheme still applies, and nothing at all under
+`NO_COLOR`, `TERM=dumb` or `--no-color`. A terminal that cannot draw wide glyphs
+gets ASCII stand-ins (`+ x ! >`) instead of replacement boxes.
+
+A tool call that is still running shows a turning frame in place of its status
+glyph and the time it has been running. Nothing animates once the session
+settles: the frame clock only exists while the Agent is busy or a call is open.
+
+Above the status row, a bar shows context pressure whenever the projection
+reports a context window.
+
+While the Agent is working, a line above the composer says so: a turning frame,
+a verb, how long the turn has been going, and — once the wait passes thirty
+seconds, when it starts to matter — the output token count.
+
+The status row carries three fields: the activity segments on the left (the
+model route the Harness resolved, the permission preset, plan/todo state, context percentage, tool count, file churn,
+approvals, subagent, token usage), a hint in the middle for what the next key
+does, and the branch, directory and session title on the right. All of it is
+projected from the Harness session projections, never recomputed locally. On a
+narrow terminal whole fields are dropped rather than wrapped, lowest value
+first — the session title goes before the directory, and the permission preset
+never goes at all.
+
+When the projection reports a goal or a todo list, a two-line panel above the
+composer shows the goal and the item in progress. It collapses to one line once
+everything is done and takes no rows at all when there is nothing to show.
 
 ## 5. Permissions
 
@@ -103,8 +162,12 @@ Switch with the official command: `/permission read-only`. Switching **to**
 `danger-full-access` asks you to send the same command twice — the first send
 only prints the warning.
 
-Approval prompts show the tool, the streamed call summary, the reason, and the
-active preset. There is no "allow everything" key. If the terminal cannot
+Approval prompts show the tool, the active preset, the first rows of the call's
+own card — the command or the diff you are being asked about — and the reason.
+Answer with `y`/`1` to allow once or `n`/`2` to reject; `↑`/`↓` move between the
+two and `Enter` confirms the highlighted one. `Enter` only counts without a
+modifier held, so a stray `Ctrl+Enter` cannot answer for you. `Esc` rejects.
+There is no "allow everything" key. If the terminal cannot
 answer — teardown, abort, a crashed renderer — the request is answered
 `unavailable`, which the Harness treats as a refusal.
 
