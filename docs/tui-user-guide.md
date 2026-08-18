@@ -63,7 +63,7 @@ fish.
 | `Tab` | Accept the open completion; otherwise move focus between the composer and the transcript. In transcript focus, `j`/`k` or `↑`/`↓` scroll and `Enter` returns to the composer. |
 | `/` | At the start of the draft, completes a command name. `Tab` or `Enter` accepts, `↑`/`↓` selects, `Esc` dismisses. |
 | `@` | Anywhere in the draft, completes a workspace path. A directory keeps the caret inside it so you can keep typing. |
-| `?` | Show the shortcut sheet, when the draft is empty. Any key closes it. |
+| `?` | Show the shortcut sheet, when the draft is empty. It takes the whole screen, like the session browser, and any key closes it. |
 | `Shift+Tab` | Cycle the permission mode through the presets the session offers. |
 | `Ctrl+P` | Command palette: type to filter, `↑`/`↓` to select, `Enter` to prefill the draft, `Esc` to close. |
 | `Ctrl+R` | Open the session browser, a full screen. Type to filter — the list *is* the search result, there is no mode to enter. `↑`/`↓` and `PgUp`/`PgDn` move the cursor, `Enter` resumes, `Esc` clears the filter and then closes. The cursor follows the session rather than the row number, so filtering cannot silently move it onto a different one. Wide terminals show a preview beside the list. |
@@ -71,6 +71,15 @@ fish.
 | `Ctrl+X` | Open that card's first file location in `$EDITOR`. |
 | `↑` / `↓` | Move between lines of a multi-line draft, then walk the draft history. Inside a question, moves the option selection. |
 | `1`–`9`, `Space` | Pick a question option; `Space` toggles in multi-select. |
+
+The mouse wheel scrolls the transcript, the same viewport `PgUp`/`PgDn` move —
+rolling far enough up reaches the startup banner. It has to: the frame is
+repainted in place, so the terminal's own scrollback never receives a row of the
+session and scrolling it would only show whatever the shell printed before
+launch. Because the wheel is claimed, native drag-select needs `Shift` (most
+terminals pass a shifted drag straight through). `/mouse` hands the wheel back to
+the terminal if you would rather select and scroll natively; `PgUp`/`PgDn` keep
+working either way, and a terminal with no `TERM` set never gets asked to report.
 
 `Home` and `End` are not bound: Ink 5 resolves both to a key name it then blanks
 out, so the TUI never sees them. `Ctrl+A` and `Ctrl+E` carry that duty. For the
@@ -91,12 +100,19 @@ new turn.
 
 - A framed banner opens a fresh session with the directory, the branch, the
   model when the run was given one, and a line of tips. It scrolls away with the
-  history rather than holding rows.
-- `> text` — your message.
+  history rather than holding rows. On a colour terminal at least 40 columns
+  wide it is led by the DeepSeek whale and a `deepseek` wordmark; with
+  `NO_COLOR`, `--no-color`, `TERM=dumb` or a narrower window the art is dropped
+  and the banner starts at the frame.
+- `> text` — your message, on a filled background so it is findable while
+  scrolling past screens of tool output (truecolor terminals only).
 - `● text` — the assistant, streamed.
 - `∴ Thinking` — reasoning, folded by default; `Ctrl+O` opens it.
 - `▸ / ✓ / ✗ / ⚠ name  [badge]` — a tool call: running, succeeded, failed, or
-  interrupted. The badge carries `exit 0`, `signal SIGTERM`, `+12 -4`,
+  interrupted. The status mark is coloured by what the call does — run, edit,
+  search, read, fetch — from the card the tool itself declared, never from its
+  name; a tool this profile cannot classify keeps the plain tool colour, and a
+  failure is red whatever it was doing. The badge carries `exit 0`, `signal SIGTERM`, `+12 -4`,
   `17 matches`, or `1 of 400 lines`, depending on what the tool declared.
 - A tool card's body hangs under a ` ⎿ ` gutter so the card reads as one block.
 - Indented tool rows are Code Mode sub-calls under their parent call.
@@ -114,10 +130,18 @@ wider than the row is broken, and CJK text breaks between characters. A resize
 re-flows the whole transcript.
 
 Diffs are coloured per row — added, removed and hunk headers each get their own
-tone rather than sharing the card's. Assistant prose gets light markdown
-styling: fenced code blocks, headings, quotes, list markers, `` `code` `` spans
-and `**bold**` runs. The markup is never hidden, so what you see is what the
-model actually wrote.
+tone rather than sharing the card's. Assistant prose is rendered as markdown:
+the syntax is consumed and only the styling is left. Headings lose their hashes,
+`**bold**`, `*italic*`, `~~strikethrough~~` and `` `code` `` keep the text and
+drop the delimiters, `[label](url)` shows the label followed by a dimmed URL,
+list markers become `•`, quotes get a `│` gutter, and `---` draws a rule. Pipe
+tables are laid out with their columns aligned by display width — CJK cells
+included — with a `─┼─` rule under the header instead of the `|---|` row. Code
+fences are the exception: the fence line becomes a rule carrying the language and
+everything inside it is kept exactly as the model wrote it. A construct whose
+closing delimiter has not streamed in yet stays literal until it arrives, and a
+table wider than the layout budget is left as written. A terminal without wide
+glyphs gets the ASCII stand-ins (`-`, `|`).
 
 Colour follows the terminal: muted hexes on a truecolor terminal, ANSI names on
 anything less so your own scheme still applies, and nothing at all under
@@ -137,7 +161,7 @@ seconds, when it starts to matter — the output token count.
 
 The status row carries three fields: the activity segments on the left (the
 model route the Harness resolved, the permission preset, plan/todo state, context percentage, tool count, file churn,
-approvals, subagent, token usage), a hint in the middle for what the next key
+approvals, subagent, token usage, provider cache hit share), a hint in the middle for what the next key
 does, and the branch, directory and session title on the right. All of it is
 projected from the Harness session projections, never recomputed locally. On a
 narrow terminal whole fields are dropped rather than wrapped, lowest value
@@ -158,6 +182,12 @@ Three presets are configured by this profile:
 | `workspace-write` (default) | write inside the workspace | required for wider access |
 | `danger-full-access` | unrestricted | not requested |
 
+The composer prompt is coloured by the active preset: red under
+`danger-full-access`, where nothing will stop to ask, and cyan under
+`read-only`. A preset this profile does not recognise leaves the prompt in its
+ordinary colour rather than guessing at how permissive it is — the status row
+still names it in full.
+
 Switch with the official command: `/permission read-only`. Switching **to**
 `danger-full-access` asks you to send the same command twice — the first send
 only prints the warning.
@@ -167,6 +197,9 @@ own card — the command or the diff you are being asked about — and the reaso
 Answer with `y`/`1` to allow once or `n`/`2` to reject; `↑`/`↓` move between the
 two and `Enter` confirms the highlighted one. `Enter` only counts without a
 modifier held, so a stray `Ctrl+Enter` cannot answer for you. `Esc` rejects.
+On a short terminal the preview is trimmed a row at a time, and the tool name
+and both answers are the last things to go — you can always see what you are
+answering and how to answer it.
 There is no "allow everything" key. If the terminal cannot
 answer — teardown, abort, a crashed renderer — the request is answered
 `unavailable`, which the Harness treats as a refusal.

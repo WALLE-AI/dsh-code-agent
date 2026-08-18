@@ -48,10 +48,30 @@ describe('splash', () => {
 
   it('stays inside the terminal width at every size', () => {
     for (let columns = 1; columns <= 100; columns++) {
-      for (const row of buildSplash(FACTS, columns, UNICODE_GLYPHS)) {
-        expect(displayWidth(row.text)).toBeLessThanOrEqual(columns)
+      for (const level of ['none', 'basic', 'truecolor'] as const) {
+        for (const row of buildSplash(FACTS, columns, UNICODE_GLYPHS, level)) {
+          expect(displayWidth(row.text)).toBeLessThanOrEqual(columns)
+        }
       }
     }
+  })
+
+  it('leads with the brand art when the terminal can carry it', () => {
+    const rows = buildSplash(FACTS, 80, UNICODE_GLYPHS, 'truecolor')
+    // Whale, then wordmark, then a separating blank row before the frame.
+    const frameAt = rows.findIndex(row => row.text.startsWith('╭'))
+    expect(frameAt).toBeGreaterThan(10)
+    expect(rows[frameAt - 1]?.text).toBe('')
+    expect(rows.slice(0, frameAt - 1).every(row => row.segments !== undefined)).toBe(true)
+  })
+
+  it('spends no rows on art the terminal cannot show', () => {
+    // A colourless terminal, an ASCII one, and one too narrow for the sprite all
+    // go straight to the frame rather than to a slab of blocks.
+    expect(buildSplash(FACTS, 80, UNICODE_GLYPHS)[0]?.text.startsWith('╭')).toBe(true)
+    expect(buildSplash(FACTS, 80, ASCII_GLYPHS, 'truecolor')[0]?.text.startsWith('+')).toBe(true)
+    const narrow = buildSplash(FACTS, 39, UNICODE_GLYPHS, 'truecolor')
+    expect(narrow.some(row => row.text.includes('▀'))).toBe(false)
   })
 
   it('renders nothing at all when there is no room', () => {

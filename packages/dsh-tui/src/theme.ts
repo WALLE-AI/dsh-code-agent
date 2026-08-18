@@ -18,6 +18,8 @@ export interface Theme {
   /** False when the terminal gets no SGR colour at all. */
   readonly enabled: boolean
   readonly color: (tone: RowTone) => ThemeColor
+  /** Fill behind a row. `undefined` for every tone but the user's message. */
+  readonly background: (tone: RowTone) => ThemeColor
   /** Rows that should be dimmed regardless of their colour. */
   readonly dim: (tone: RowTone) => boolean
 }
@@ -40,6 +42,13 @@ const BASIC: Palette = Object.freeze({
   quote: undefined,
   bullet: 'cyan',
   badge: 'magenta',
+  'tool-terminal': 'yellow',
+  'tool-diff': 'green',
+  'tool-search': 'magenta',
+  'tool-read': 'cyan',
+  'tool-web': 'blue',
+  'mode-restricted': 'cyan',
+  'mode-danger': 'red',
 })
 
 /**
@@ -62,6 +71,26 @@ const TRUECOLOR: Palette = Object.freeze({
   quote: '#8d95a6',
   bullet: '#6cb6c9',
   badge: '#b48ead',
+  'tool-terminal': '#d8b070',
+  'tool-diff': '#7fb37f',
+  'tool-search': '#b48ead',
+  'tool-read': '#6cb6c9',
+  'tool-web': '#7da1de',
+  'mode-restricted': '#6cb6c9',
+  'mode-danger': '#e06c75',
+})
+
+/**
+ * Backgrounds, which almost nothing has.
+ *
+ * A filled row is the loudest thing a terminal can do, so exactly one tone gets
+ * one: the user's own message, which needs to be findable while scrolling past
+ * screens of tool output. It is a near-foreground slate — enough to bound the
+ * text, not enough to fight it — and below truecolor there is no such shade to
+ * be had, so a 16-colour terminal gets none rather than a solid blue slab.
+ */
+const BACKGROUND: Partial<Record<RowTone, ThemeColor>> = Object.freeze({
+  user: '#232a36',
 })
 
 /** Tones that read as secondary content whatever the palette. */
@@ -70,6 +99,7 @@ const DIM_TONES: ReadonlySet<RowTone> = new Set<RowTone>(['reasoning', 'system',
 const NONE: Theme = Object.freeze({
   enabled: false,
   color: () => undefined,
+  background: () => undefined,
   // Without colour, dimming is the only remaining way to rank a row — but a
   // terminal that refused colour outright is told to render nothing special.
   dim: (tone: RowTone) => DIM_TONES.has(tone),
@@ -89,6 +119,7 @@ export function resolveTheme(colorLevel: ColorLevel, enabled = true): Theme {
   return Object.freeze({
     enabled: true,
     color: (tone: RowTone) => palette[tone],
+    background: (tone: RowTone) => colorLevel === 'truecolor' ? BACKGROUND[tone] : undefined,
     dim: (tone: RowTone) => DIM_TONES.has(tone),
   })
 }

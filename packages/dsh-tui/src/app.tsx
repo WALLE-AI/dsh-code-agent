@@ -1,9 +1,10 @@
 import React, { useEffect, useState, useSyncExternalStore } from 'react'
 import { Box, render, Text, useInput } from 'ink'
+import { paintInPlace } from './frame-writer.ts'
 import { formatSessionRow } from './session-selector.ts'
 import {
   caretLine, clearComposer, deleteComposer, emptyComposer, historyComposer,
-  insertComposer, moveComposer, newlineComposer, submitComposer,
+  insertComposer, moveComposer, newlineComposer, promptTone, submitComposer,
 } from './composer.ts'
 import type { ComposerState } from './composer.ts'
 import type { TuiActions, TuiView } from './contracts.ts'
@@ -20,6 +21,7 @@ import {
 } from './todo-panel.ts'
 import { buildWorkingLine } from './working-line.ts'
 import { glyphSet } from './glyphs.ts'
+import { readMouse, WHEEL_ROWS } from './mouse.ts'
 import type { RowTone } from './styling.ts'
 import { resolveTheme, type Theme } from './theme.ts'
 import { currentToolEntryId, type TranscriptLine } from './transcript-view.ts'
@@ -72,10 +74,18 @@ const APPROVAL_CHOICES = [
 /** Preview rows taken from the pending call's own card. */
 const APPROVAL_PREVIEW_ROWS = 3
 
-/** Ink props for a tone, omitting `color` entirely when there is none to set. */
-function themed(theme: Theme, tone: RowTone): { color?: string } {
+/**
+ * Ink props for a tone, omitting each prop entirely when there is none to set —
+ * an explicit `undefined` would still be a prop, and the no-colour smoke asserts
+ * the renderer emits no SGR sequence at all.
+ */
+function themed(theme: Theme, tone: RowTone): { color?: string; backgroundColor?: string } {
   const color = theme.color(tone)
-  return color === undefined ? {} : { color }
+  const background = theme.background(tone)
+  return {
+    ...color === undefined ? {} : { color },
+    ...background === undefined ? {} : { backgroundColor: background },
+  }
 }
 
 /**
@@ -183,6 +193,33 @@ export function TuiApp({
   const completionIndex = completionMatches.length === 0
     ? 0
     : Math.min(completion, completionMatches.length - 1)
+  // The completion list is the palette's overlay model without the frame: it
+  // hangs straight off the composer, where a title would be noise. Sharing the
+  // model is what keeps the focused row on screen in a long list — the old
+  // `index - 1` slice pushed it off the end.
+  const completionView = !completionOpen ? undefined : buildOverlay(
+    completionMatches.map(item => ({
+      id: item.value,
+      text: item.description === undefined ? item.label : `${item.label}  ${item.description}`,
+      lines: 1,
+    })),
+    completionIndex,
+    {
+      title: '',
+      hint: '',
+      columns,
+      // One row goes back to the hint when there is something to hide, so the
+      // list never claims more than the budget it was given.
+      rowBudget: Math.max(
+        1,
+        completionMatches.length > completionLimit ? completionLimit - 1 : completionLimit,
+      ),
+    },
+  )
+  const completionHint = completionView === undefined
+    || (completionView.above === undefined && completionView.below === undefined)
+    ? undefined
+    : [completionView.above, completionView.below].filter(part => part !== undefined).join(' · ')
   const customVisible = visibleQuestion !== undefined && activeQuestionForm !== undefined
     && ((visibleQuestion.options?.length ?? 0) === 0
       || (activeQuestionForm.custom[visibleQuestion.id]?.length ?? 0) > 0)
@@ -225,15 +262,14 @@ export function TuiApp({
     composerRows: draftRows.length,
     interactive: composerVisible,
     approval: state.approval !== undefined,
-    approvalReason: approvalPreview.length > 0,
+    approvalPreviewRows: approvalPreview.length,
     ...visibleQuestion === undefined ? {} : { question: {
       detail: visibleQuestion.detail !== undefined,
       optionCount: visibleQuestion.options?.length ?? 0,
       customVisible,
     } },
-    commandCount: completionOpen ? Math.min(completionMatches.length, completionLimit) : 0,
-    ...(paletteOpen ? { listModal: { count: Math.max(1, paletteMatches.length) } } : {}),
-    ...(helpVisible ? { listModal: { count: KEY_BINDINGS.length } } : {}),
+    commandCount: (completionView?.rows.length ?? 0) + Number(completionHint !== undefined),
+    ...(paletteOpen ? { overlay: { rows: Math.max(1, paletteMatches.length) } } : {}),
     // The pane spends two extra rows on its title and scroll hints.
     notice: notice !== undefined,
     error: state.error !== undefined,
@@ -256,25 +292,20 @@ export function TuiApp({
   const browserRows = browser === undefined ? [] : browserMatches(state.sessions, browser.query)
   const browserFocus = browser === undefined ? 0 : browserFocusIndex(browserRows, browser)
   // Both list overlays share one model, one window rule and one region.
-  const overlayRows: readonly OverlayRow[] = helpVisible
-    ? helpRows(KEY_BINDINGS)
-    : paletteOpen
+  const overlayRows: readonly OverlayRow[] = paletteOpen
     ? paletteMatches.map(command => ({
       id: command.name,
       text: `/${command.name}  ${command.description}`,
       lines: 1,
     }))
     : []
-  const overlay = !paletteOpen && !helpVisible ? undefined : buildOverlay(
+  const overlay = !paletteOpen ? undefined : buildOverlay(
     overlayRows,
-    helpVisible ? 0 : paletteIndex,
+    paletteIndex,
     {
-      ...(helpVisible ? { marker: ' ' } : {}),
-      title: helpVisible ? 'Shortcuts' : 'Commands',
+      title: 'Commands',
       hint: fitHint(
-        helpVisible
-          ? ['any key to close', 'Esc']
-          : [
+        [
             'type to filter · ↑↓ select · Enter prefill · Esc close',
             '↑↓ · Enter · Esc',
             'Esc',
@@ -282,7 +313,7 @@ export function TuiApp({
         Math.max(0, columns - 20),
       ),
       columns,
-      rowBudget: helpVisible ? Math.max(1, layout.viewportRows) : layout.paletteLimit,
+      rowBudget: layout.paletteLimit,
       emptyText: 'no command matches',
     },
   )
@@ -344,6 +375,25 @@ export function TuiApp({
     || (surface === 'transcript'
       && (action.kind === 'focus-composer' || (action.kind === 'scroll' && !action.page)))
   useInput((input, key) => {
+    const scrollBy = (direction: -1 | 1, amount: number): void => {
+      if (direction === -1) {
+        // At the oldest rendered row, page more retained history into the window.
+        const atTop = viewport.offsetFromBottom >= Math.max(0, state.lines.length - layout.viewportRows)
+        if (atTop && state.hasMoreHistory) actions.expandTranscript()
+      }
+      setViewport(current => scrollViewport(current, direction, amount, layout.viewportRows))
+    }
+    // Wheel notches arrive as input, not as scrollback: the frame is repainted in
+    // place, so the terminal's own buffer never holds a row of it. They drive the
+    // same viewport PgUp/PgDn drives, which is what still holds the banner.
+    const mouse = readMouse(input)
+    if (mouse.consumed) {
+      // A report on any other surface is swallowed, never typed into the draft.
+      if (surface === 'composer' || surface === 'transcript') {
+        for (const notch of mouse.notches) scrollBy(notch.direction, WHEEL_ROWS)
+      }
+      return
+    }
     const event = fromInkKey(input, key)
     const line = caretLine(composer)
     const action = resolveKey(surface, event, {
@@ -367,14 +417,6 @@ export function TuiApp({
     if ((surface === 'composer' || surface === 'transcript')
       && confirm !== undefined && !keepsCancelArmed(action)) {
       setConfirm(undefined)
-    }
-    const scrollBy = (direction: -1 | 1, amount: number): void => {
-      if (direction === -1) {
-        // At the oldest rendered row, page more retained history into the window.
-        const atTop = viewport.offsetFromBottom >= Math.max(0, state.lines.length - layout.viewportRows)
-        if (atTop && state.hasMoreHistory) actions.expandTranscript()
-      }
-      setViewport(current => scrollViewport(current, direction, amount, layout.viewportRows))
     }
     const finishQuestion = (next: QuestionFormState): void => {
       if (questionPrompt === undefined) return
@@ -572,6 +614,25 @@ export function TuiApp({
   const contextBar = layout.showStatus && layout.showContextBar && status.bar !== undefined
     ? renderContextBar(status.bar.used, status.bar.total, columns)
     : undefined
+  if (helpVisible) {
+    const sheet = buildOverlay(helpRows(KEY_BINDINGS), 0, {
+      marker: ' ',
+      title: 'Shortcuts',
+      hint: fitHint(['any key to close', 'Esc'], Math.max(0, columns - 12)),
+      columns,
+      // One row for the title, one for each scroll hint, one of headroom.
+      rowBudget: Math.max(1, rows - 4),
+    })
+    return <Box flexDirection="column">
+      <Box justifyContent="space-between">
+        <Text {...themed(theme, 'heading')} bold>{sheet.title}</Text>
+        <Text dimColor>{sheet.hint}</Text>
+      </Box>
+      {sheet.above === undefined ? null : <Text dimColor>{sheet.above}</Text>}
+      {sheet.rows.map((row, index) => <Text key={String(index)}>{row}</Text>)}
+      {sheet.below === undefined ? null : <Text dimColor>{sheet.below}</Text>}
+    </Box>
+  }
   // A screen replaces the conversation rather than floating over it: rendering it
   // as an early return — after every hook above — is what makes that literal.
   // There is no transcript underneath to repaint, scroll, or bleed through.
@@ -629,7 +690,6 @@ export function TuiApp({
     <Box flexDirection="column" marginTop={1} height={layout.viewportRows}>
       <RenderBoundary region="transcript" {...onRenderError === undefined ? {} : { onError: onRenderError }}>
         {visibleLines.map((line, index) => {
-          const tone = theme.color(line.tone)
           const plain = truncateToWidth(runningText(line, now, animate), columns)
           // Styled runs are only used when the row survived truncation intact;
           // re-slicing segments to a cut width would risk splitting a wide cell.
@@ -638,21 +698,30 @@ export function TuiApp({
             : undefined
           return <Text
             key={`${String(index)}:${line.entryId}`}
-            {...tone === undefined ? {} : { color: tone }}
-            {...theme.dim(line.tone) || !line.header ? { dimColor: true } : {}}
+            {...themed(theme, line.tone)}
+            {...(theme.dim(line.tone) || !line.header) && segments === undefined
+              ? { dimColor: true } : {}}
             {...line.header && line.tone === 'user' ? { bold: true } : {}}
           >{segments === undefined
             ? plain
             : segments.map((segment, at) => <Text
               key={String(at)}
               {...themed(theme, segment.tone ?? line.tone)}
+              {...theme.enabled && segment.color !== undefined ? { color: segment.color } : {}}
+              {...theme.enabled && segment.background !== undefined
+                ? { backgroundColor: segment.background } : {}}
               {...segment.bold === true ? { bold: true } : {}}
               {...segment.dim === true ? { dimColor: true } : {}}
+              {...segment.italic === true ? { italic: true } : {}}
+              {...segment.strikethrough === true ? { strikethrough: true } : {}}
             >{segment.text}</Text>)}</Text>
         })}
       </RenderBoundary>
     </Box>
-    {state.approval === undefined ? null : <Box flexDirection="column" marginTop={1}>
+    {state.approval === undefined ? null : <Box
+      flexDirection="column"
+      marginTop={layout.showApprovalMargin ? 1 : 0}
+    >
       <Box justifyContent="space-between">
         <Text {...themed(theme, 'badge')} bold>{truncateToWidth(
           `Approve ${state.approval.toolName}?`
@@ -661,7 +730,7 @@ export function TuiApp({
         )}</Text>
         {!queuedPrompts ? null : <Text dimColor>1 more prompt queued</Text>}
       </Box>
-      {approvalPreview.map((line, index) => <Text key={String(index)} dimColor>
+      {approvalPreview.slice(0, layout.approvalPreviewRows).map((line, index) => <Text key={String(index)} dimColor>
         {truncateToWidth(sanitizeLine(line), columns)}
       </Text>)}
       {APPROVAL_CHOICES.map((choice, index) => <Text
@@ -720,7 +789,7 @@ export function TuiApp({
         const prefix = rowIndex > 0 ? (index === 0 ? '… ' : '  ') : '> '
         const cells = Array.from(row)
         return <Box key={String(rowIndex)}>
-          <Text {...themed(theme, 'user')}>{prefix}</Text>
+          <Text {...themed(theme, promptTone(state.activity.permission?.current))}>{prefix}</Text>
           {rowIndex !== caret.row
             ? <Text>{row}</Text>
             : <>
@@ -731,17 +800,12 @@ export function TuiApp({
         </Box>
       })}
     </Box>}
-    {!completionOpen ? null : <Box flexDirection="column">
-      {completionMatches.slice(
-        Math.max(0, Math.min(completionIndex - 1, completionMatches.length - completionLimit)),
-        Math.max(0, Math.min(completionIndex - 1, completionMatches.length - completionLimit))
-          + completionLimit,
-      ).map(item => <Text key={item.value} wrap="truncate-end">
-        <Text {...item === completionMatches[completionIndex] ? themed(theme, 'heading') : {}}>
-          {item === completionMatches[completionIndex] ? '> ' : '  '}{item.label}
-        </Text>
-        {item.description === undefined ? '' : `  ${item.description}`}
-      </Text>)}
+    {completionView === undefined ? null : <Box flexDirection="column">
+      {completionView.rows.map((row, index) => <Text
+        key={String(index)}
+        {...row.startsWith('>') ? themed(theme, 'heading') : {}}
+      >{row}</Text>)}
+      {completionHint === undefined ? null : <Text dimColor>{completionHint}</Text>}
     </Box>}
     {!layout.showNotice || notice === undefined ? null
       : <Text {...themed(theme, 'heading')}>{truncateToWidth(sanitizeLine(notice), columns)}</Text>}
@@ -767,6 +831,10 @@ export function createInkView(
   animate = true,
   clock: () => number = Date.now,
 ): TuiView {
+  // Ink repaints by erasing every row it wrote last time; on a full-height
+  // frame with a spinner running that is a whole-screen erase ten times a
+  // second. The painter rewrites only the rows that differ.
+  const painted = paintInPlace(stdout)
   const instance = render(
     <TuiApp
       store={store}
@@ -779,7 +847,7 @@ export function createInkView(
     />,
     // Ink would unmount on the first Ctrl+C; cancellation must go through the
     // TUI's own two-step confirmation and the bounded shutdown sequence.
-    { stdin, stdout, stderr, exitOnCtrlC: false },
+    { stdin, stdout: painted, stderr, exitOnCtrlC: false },
   )
   return { unmount: () => { instance.unmount() } }
 }

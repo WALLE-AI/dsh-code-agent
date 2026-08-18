@@ -7,13 +7,39 @@ import { resolveTheme } from '../src/theme.ts'
 const TONES = [
   'user', 'assistant', 'reasoning', 'system', 'tool', 'error',
   'diff-add', 'diff-remove', 'diff-hunk', 'code', 'heading', 'quote', 'bullet', 'badge',
+  'tool-terminal', 'tool-diff', 'tool-search', 'tool-read', 'tool-web',
 ] as const
 
 describe('theme resolution', () => {
   it('emits no colour at all when the terminal refused it', () => {
     for (const theme of [resolveTheme('none'), resolveTheme('truecolor', false)]) {
       expect(theme.enabled).toBe(false)
-      for (const tone of TONES) expect(theme.color(tone)).toBeUndefined()
+      for (const tone of TONES) {
+        expect(theme.color(tone)).toBeUndefined()
+        expect(theme.background(tone)).toBeUndefined()
+      }
+    }
+  })
+
+  it('fills the user message and nothing else, and only where a shade exists', () => {
+    const truecolor = resolveTheme('truecolor')
+    expect(truecolor.background('user')).toMatch(/^#[0-9a-f]{6}$/)
+    for (const tone of TONES) {
+      if (tone !== 'user') expect(truecolor.background(tone)).toBeUndefined()
+    }
+    // 16 and 256-colour terminals have no near-background slate to spend, and a
+    // solid ANSI block behind a message is worse than no bubble at all.
+    for (const level of ['basic', 'ansi256'] as const) {
+      expect(resolveTheme(level).background('user')).toBeUndefined()
+    }
+  })
+
+  it('gives each tool card kind its own dot colour', () => {
+    const kinds = ['tool-terminal', 'tool-diff', 'tool-search', 'tool-read', 'tool-web'] as const
+    for (const level of ['basic', 'truecolor'] as const) {
+      const colors = kinds.map(tone => resolveTheme(level).color(tone))
+      expect(colors.every(color => color !== undefined)).toBe(true)
+      expect(new Set(colors).size).toBe(kinds.length)
     }
   })
 

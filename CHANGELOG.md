@@ -23,6 +23,17 @@ enforced by `npm run check:upstream`.
 
 ### Added
 
+- **The mouse wheel scrolls the transcript** — a wheel roll used to scroll the
+  terminal's own buffer, which holds none of the session: the frame is repainted
+  in place, so nothing is ever handed to scrollback, and rolling up past two
+  turns showed the shell's output from before launch instead of the banner.
+  Wheel reporting (`?1000` + `?1006` SGR) is on for a TTY whose `TERM` is set,
+  `src/mouse.ts` parses the reports — including the several a fast roll batches
+  into one chunk — and each notch moves the same viewport `PgUp`/`PgDn` move, so
+  rolling up reaches the whale and the wordmark again. Every report is consumed,
+  never typed into the draft. Claiming the wheel means native drag-select needs
+  `Shift`; `/mouse` hands it back to the terminal, and the mode is cleared on
+  every exit path so no shell inherits it.
 - **Testable key bindings** — the 160-line `useInput` cascade became a pure
   resolver in `src/keymap.ts`. The Ink layer translates a keypress into a
   renderer-independent event and dispatches the action the resolver returns, so
@@ -66,6 +77,15 @@ enforced by `npm run check:upstream`.
   stored as transcript rows rather than a pinned region, so it scrolls away with
   the history and costs nothing thereafter, and it re-flows on resize. Facts the
   profile was not told are left out rather than filled with a placeholder.
+- **Brand art on the banner** — a colour DeepSeek whale drawn in half-block
+  cells and a `deepseek` wordmark in a block font with a left-to-right gradient
+  lead the banner on a terminal that can carry them. Both are dropped whole on
+  an ASCII terminal, under `NO_COLOR`/`--no-color`, or below 40 columns: art
+  with the colour removed is a grey slab, not a degraded whale. Below truecolor
+  the palette falls back to named 16-colour blues so the outline stays distinct
+  from the body. The sprite and the glyph table come from the `dsh-TUI` project
+  (MIT) — see `THIRD_PARTY_NOTICES.md`; the painters are ours and emit ordinary
+  styled transcript rows.
 - **Speaker marks and the tool gutter** — the assistant gets a `●`, reasoning
   folds behind `∴ Thinking` instead of a bare `~`, and a tool card's body hangs
   under a ` ⎿ ` gutter with its continuation rows aligned, so a card reads as one
@@ -78,7 +98,24 @@ enforced by `npm run check:upstream`.
   computed from a *row* budget, growing alternately from the focus and taking
   the shorter side, which replaces two copies of an `index - 2` slice that
   pushed the focused row off the end of a long list. A property test asserts the
-  focus is never dropped, for any list size, focus and budget.
+  focus is never dropped, for any list size, focus and budget. The draft
+  completion list runs through the same model, so it too keeps the focused
+  candidate on screen and now says how many it is hiding; `terminalLayout`
+  knows the region as `overlay: { rows }` rather than by which list is showing.
+- **Colour that says what a row is** — the user's own message sits on a filled
+  background (truecolor only; a 16-colour block would be a slab), a tool card's
+  status mark takes the colour of what the call *does* — run, edit, search,
+  read, fetch — from the card kind the tool declared rather than from its name,
+  and the composer prompt takes the permission preset's colour so
+  `danger-full-access` looks like what it is. Unclassifiable kinds and unknown
+  presets keep the ordinary tone rather than guessing.
+- **Cache hit share in the status row** — `cache 76%` from the session's own
+  token-usage projection, using the Harness's own definition (cache reads over
+  all three disjoint prompt-side buckets). It is the first segment dropped on a
+  narrow terminal, and it is absent entirely until something has been billed.
+  There is no tokens-per-second segment beside it: the projection reports no
+  rate, and a locally computed one would be this profile's guess wearing the
+  Harness's authority.
 - **Approval panel** — the one-line `[y/N]` prompt became a panel that shows the
   first rows of the pending call's own card, so the decision is made against the
   command or the diff rather than a joined summary. `↑`/`↓` move between allow
@@ -202,6 +239,14 @@ enforced by `npm run check:upstream`.
 
 ### Changed
 
+- **Assistant prose is rendered as markdown, not just tinted.** The syntax is
+  consumed and only the styling survives: headings drop their hashes, bold,
+  italic, strikethrough, code spans and links lose their delimiters, list
+  markers become one glyph, `---` draws a rule, and pipe tables are laid out
+  with columns aligned by display width (CJK included) under a `─┼─` rule.
+  Fenced code keeps its contents verbatim. The renderer still emits exactly one
+  row per source line, so header/detail alignment and fold counts are unchanged;
+  an unclosed construct stays literal until the rest of it streams in.
 - The gate scripts, `upstream-compat.json`, the fixture-parity spec and the
   adapter's source fallback all pointed one directory above the vendored Harness
   root, so every terminal gate failed to boot while `pnpm tui` worked. All of
@@ -219,6 +264,51 @@ enforced by `npm run check:upstream`.
 
 ### Fixed
 
+- The screen flickered on every repaint once anything animated. Ink only
+  repaints incrementally while the frame is shorter than the terminal; at
+  `outputHeight >= stdout.rows` it erases the whole screen and rewrites it
+  (`ink.js:121`). The layout was spending the full row count, so every frame
+  took that path — measured 29 of 29 streaming frames carrying `ESC[2J`.
+  `terminalLayout` now reserves one row of headroom, which brought that to 0.
+  A layout invariant asserts the frame stays strictly shorter than the terminal
+  across heights, and a view test asserts no streamed frame clears the screen.
+- The same flicker returned whenever an approval was pending, which is where it
+  was most disruptive: the answer you are being asked for is on the screen that
+  will not hold still. The approval region renders a blank row, a title, a
+  preview of the call and one row per answer, but the layout budgeted only two
+  or three rows for the whole thing — up to six rows of overflow, repainted on
+  every spinner tick. `terminalLayout` now budgets the region as it is actually
+  drawn, trims the preview when the terminal is short, and drops the separating
+  blank row before it would let the answers themselves off the screen.
+- Even below that threshold the screen still flickered, because staying under
+  the terminal height only avoids Ink's *full-screen* clear. Its ordinary
+  repaint erases every row it wrote last time and then rewrites them
+  (`log-update`: `eraseLines(previousLineCount) + output`), so a frame that
+  nearly fills the terminal is blanked and redrawn ten times a second while the
+  spinner turns — 40 rows erased per render, measured over 70 consecutive
+  renders with an approval pending. Between two ticks only a handful of those
+  rows actually differ, so `src/frame-writer.ts` now wraps the output stream and
+  repaints in place: it walks the cursor up, overwrites only the rows that
+  changed, steps over the rest with a bare newline, and writes nothing at all
+  for an identical frame. No row is erased before it is overwritten, so there is
+  no blank state to see. It is a transformation of Ink's own bytes, not a
+  replacement renderer — a write it does not recognise, or a frame whose height
+  changed, is handed back to Ink untouched.
+- The startup banner painted as a grey slab instead of the brand art. The whale
+  and the wordmark *are* their styled runs — the shape is carried by colour, not
+  by the characters — and the header rows were copied into the transcript with
+  `text` and `tone` only, dropping the runs on the way. They are carried
+  through now, and a row that brings its own colours is no longer dimmed on top
+  of them.
+- The whale's outline was trimmed with grey speckle wherever it met empty
+  space. A half-block paints its other half with the background, so a cell whose
+  top pixel was transparent was drawing that top half in the terminal's default
+  foreground; a one-pixel cell now takes the block that sits on its own half and
+  no background at all.
+- The `?` shortcut sheet rendered a viewport's worth of rows while the layout
+  had only reserved the smaller palette budget, so it overflowed the frame and
+  triggered the same full-screen clear. It is now a screen of its own, like the
+  session browser, rather than a region inside the conversation frame.
 - Bracketed paste was disabled on exit but never enabled on entry, so pastes
   arrived as ordinary keystrokes and were only cleaned up defensively. The
   terminal guard now sends `?2004h` alongside the alternate-screen switch.

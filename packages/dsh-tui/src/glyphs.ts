@@ -25,6 +25,14 @@ export interface GlyphSet {
   /** Tool-card body gutter: first row, then the alignment for the rest. */
   readonly gutterFirst: string
   readonly gutterRest: string
+  /** Markdown list marker, replacing whichever of `-`, `*`, `+` was written. */
+  readonly listBullet: string
+  /** Markdown block-quote marker, replacing `>`. */
+  readonly quoteBar: string
+  /** Rendered-table parts: the column separator, its rule, and their joint. */
+  readonly tableColumn: string
+  readonly tableRow: string
+  readonly tableCross: string
 }
 
 export const UNICODE_GLYPHS: GlyphSet = Object.freeze({
@@ -41,6 +49,11 @@ export const UNICODE_GLYPHS: GlyphSet = Object.freeze({
   thinking: '∴',
   gutterFirst: ' ⎿ ',
   gutterRest: '   ',
+  listBullet: '•',
+  quoteBar: '│',
+  tableColumn: '│',
+  tableRow: '─',
+  tableCross: '┼',
 })
 
 export const ASCII_GLYPHS: GlyphSet = Object.freeze({
@@ -57,6 +70,11 @@ export const ASCII_GLYPHS: GlyphSet = Object.freeze({
   thinking: '~',
   gutterFirst: ' \\ ',
   gutterRest: '   ',
+  listBullet: '-',
+  quoteBar: '|',
+  tableColumn: '|',
+  tableRow: '-',
+  tableCross: '+',
 })
 
 /** All glyphs are one cell wide in either set, so row budgets are unaffected. */

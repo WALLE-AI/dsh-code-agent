@@ -52,6 +52,57 @@ function virtualStdin(): VirtualStdin {
   return stream
 }
 
+/**
+ * A row buffer for the small escape vocabulary the TUI actually emits: cursor
+ * up, column reset, erase-line, and text terminated by a newline. Anything else
+ * stays in the row text, so assertions can strip styling themselves.
+ */
+function renderScreen(writes: readonly string[]): string {
+  const rows: string[] = []
+  let row = 0
+  let pending = ''
+  let dirty = false
+  const flush = (): void => {
+    if (dirty) rows[row] = pending
+    pending = ''
+    dirty = false
+  }
+  for (const write of writes) {
+    let at = 0
+    while (at < write.length) {
+      const move = /^\u001B\[(\d*)A/.exec(write.slice(at))
+      if (move !== null) {
+        flush()
+        row = Math.max(0, row - (move[1] === '' ? 1 : Number(move[1])))
+        at += move[0].length
+        continue
+      }
+      if (write.startsWith(`${ESC}[2K`, at)) {
+        rows[row] = ''
+        pending = ''
+        dirty = false
+        at += 4
+        continue
+      }
+      if (write.startsWith(`${ESC}[G`, at)) {
+        at += 3
+        continue
+      }
+      if (write[at] === '\n') {
+        flush()
+        row++
+        at++
+        continue
+      }
+      pending += write[at]
+      dirty = true
+      at++
+    }
+    flush()
+  }
+  return rows.join('\n')
+}
+
 const views: TuiView[] = []
 
 function mount(
@@ -84,15 +135,10 @@ function mount(
     stdin.feed(data)
     await new Promise(resolve => setTimeout(resolve, 60))
   }
-  // Ink emits cursor and erase sequences in their own writes; the newest frame
-  // that carries visible text is the current screen.
-  const screen = (): string => {
-    for (let index = stdout.frames.length - 1; index >= 0; index--) {
-      const frame = stdout.frames[index] ?? ''
-      if (frame.replace(/\[[0-?]*[ -/]*[@-~]/g, '').trim() !== '') return frame
-    }
-    return ''
-  }
+  // Frames are painted differentially (`frame-writer.ts`), so no single write is
+  // the screen: the screen is what the rows add up to. This replays the writes
+  // into a row buffer the way a terminal would.
+  const screen = (): string => renderScreen(stdout.frames)
   return { calls, type, screen, stdout }
 }
 
@@ -139,6 +185,33 @@ describe('terminal frame', () => {
     }
   })
 
+  it('renders assistant markdown, laying a table out on screen', async () => {
+    const store = new TuiStore(50)
+    store.append({
+      seq: 1,
+      kind: 'assistant-final',
+      messageId: 'm1',
+      text: [
+        '## 工具',
+        '| 工具 | 用途 |',
+        '|------|------|',
+        '| **read** | 读取文本文件内容 |',
+        '| write | 创建新文件 |',
+      ].join('\n'),
+    })
+    const { screen } = mount(store)
+    await settle()
+    const visible = screen().replace(/\[[0-?]*[ -/]*[@-~]/g, '')
+    // The markers are consumed rather than shown, and the columns line up.
+    expect(visible).toContain('● 工具')
+    expect(visible).not.toContain('##')
+    expect(visible).not.toContain('**')
+    expect(visible).not.toContain('|---')
+    expect(visible).toContain('read  │ 读取文本文件内容')
+    expect(visible).toContain('write │ 创建新文件')
+    expect(visible.split('\n').some(row => /^─+┼─+$/.test(row.trim()))).toBe(true)
+  })
+
   it('folds reasoning behind a named marker', async () => {
     const store = new TuiStore(50)
     store.append({ seq: 1, kind: 'reasoning-delta', text: 'weighing options', messageId: 'r1' })
@@ -161,6 +234,32 @@ describe('terminal frame', () => {
     await settle()
     expect(screen()).toContain('DeepSeek Harness TUI')
     expect(screen()).toContain('Tip: /help for commands')
+  })
+
+  it('scrolls back to the banner on a wheel roll, and types nothing', async () => {
+    // The frame is repainted in place, so the terminal's own scrollback holds
+    // none of the session: the wheel has to move the transcript viewport, the
+    // one place the banner still exists.
+    const store = new TuiStore(200)
+    store.setHeader(width => buildSplash(
+      { title: 'DeepSeek Harness TUI', directory: 'repo', tips: ['/help for commands'] },
+      width,
+      UNICODE_GLYPHS,
+    ))
+    for (let seq = 1; seq <= 60; seq++) {
+      store.append({ seq, kind: 'user', text: `line ${String(seq)}` })
+    }
+    const { screen, type } = mount(store)
+    await settle()
+    expect(screen()).not.toContain('Tip: /help for commands')
+    // A fast roll batches its reports into one chunk, which is how they arrive.
+    await type('[<64;10;5M'.repeat(40))
+    const rolled = screen()
+    expect(rolled).toContain('Tip: /help for commands')
+    // The reports were consumed, not typed.
+    expect(rolled).not.toContain('64;10;5')
+    await type('[<65;10;5M'.repeat(40))
+    expect(screen()).not.toContain('Tip: /help for commands')
   })
 
   it('wraps a wide line instead of cutting it off', async () => {
@@ -219,6 +318,70 @@ describe('running feedback', () => {
     store.setStatus('idle')
     await settle()
     expect(screen()).not.toMatch(/Working…/)
+  })
+
+  it('never erases the whole screen while streaming', async () => {
+    // Ink falls back to `clearTerminal` for any frame that reaches the terminal
+    // height (`ink.js:121`). Repeating that on every render is what a user sees
+    // as flicker, so the frame must stay short enough to be patched in place.
+    const store = new TuiStore(200)
+    store.setInteractive(true)
+    store.append({ seq: 1, kind: 'user', text: '你是谁' })
+    store.setStatus('running')
+    const { stdout } = mount(store)
+    await settle()
+    const before = stdout.frames.length
+    for (let step = 0; step < 20; step++) {
+      store.append({
+        seq: 2 + step, kind: 'assistant-delta', text: '我是一个编码助手。', messageId: 'm1',
+      })
+      await new Promise(resolve => setTimeout(resolve, 10))
+    }
+    await settle()
+    const streamed = stdout.frames.slice(before)
+    expect(streamed.length).toBeGreaterThan(0)
+    expect(streamed.filter(frame => frame.includes(`${ESC}[2J`))).toEqual([])
+  })
+
+  it('never erases the whole screen while an approval is pending', async () => {
+    // The approval region is the tallest thing the frame can grow: a blank row,
+    // a title, a preview of the call and one row per answer. Budgeting fewer
+    // rows for it than it renders put the frame over the terminal height and
+    // back onto `clearTerminal` — with the spinner running, on every tick.
+    const store = new TuiStore(200)
+    store.setInteractive(true)
+    store.append({ seq: 1, kind: 'user', text: '简单使用一些工具' })
+    for (let step = 0; step < 30; step++) {
+      store.append({
+        seq: 2 + step, kind: 'assistant-delta', text: '好的，我来看看。', messageId: 'm1',
+      })
+    }
+    store.append({
+      seq: 100, kind: 'tool-call', callId: 'c1', name: 'bash',
+      text: JSON.stringify({ command: 'ls -la /etc && cat /etc/hosts' }),
+    })
+    store.setStatus('running')
+    store.setApproval({
+      id: 1, toolName: 'bash', callId: 'c1', reason: 'write outside the workspace',
+    })
+    const { stdout, screen } = mount(store)
+    await settle()
+    // The answers are what the pending run is waiting on: they must be there.
+    expect(screen()).toContain('Approve bash?')
+    expect(screen()).toContain('allow once')
+    expect(screen()).toContain('reject')
+    const before = stdout.frames.length
+    // The spinner keeps repainting while the approval waits; that is the loop
+    // the flicker lived in.
+    await new Promise(resolve => setTimeout(resolve, 400))
+    const waiting = stdout.frames.slice(before)
+    expect(waiting.length).toBeGreaterThan(0)
+    expect(waiting.filter(frame => frame.includes(`${ESC}[2J`))).toEqual([])
+    // Staying under the terminal height is only half of it: Ink's ordinary
+    // repaint erases every row it wrote last time, which blanks a full-height
+    // frame just as visibly. Each spinner tick must land as an overwrite of the
+    // rows that changed, and erase nothing.
+    expect(waiting.filter(frame => frame.includes(`${ESC}[2K`))).toEqual([])
   })
 
   it('stops repainting once nothing is running', async () => {
@@ -389,6 +552,24 @@ describe('command palette and folding', () => {
     await type('read-only')
     await type('\r')
     expect(calls.submit).toHaveBeenCalledWith('/permission read-only')
+  })
+
+  it('keeps the focused completion on screen in a list longer than the budget', async () => {
+    const store = new TuiStore(50)
+    store.setInteractive(true)
+    store.setCommands(Array.from({ length: 12 }, (_, index) => ({
+      name: `cmd${String(index).padStart(2, '0')}`,
+      description: `command ${String(index)}`,
+    })))
+    const { type, screen } = mount(store)
+    await settle()
+    await type('/cmd')
+    const down = `${String.fromCharCode(27)}[B`
+    for (let step = 0; step < 9; step++) await type(down)
+    // The window follows the focus instead of pinning to the head of the list,
+    // and it says how many candidates it is hiding.
+    expect(screen()).toContain('> /cmd09')
+    expect(screen()).toContain('more')
   })
 
   it('completes an @ mention mid-message and asks for the matching paths', async () => {

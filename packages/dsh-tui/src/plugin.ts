@@ -12,6 +12,7 @@ import {
 } from './diagnostic-log.ts'
 import { detachedSpawn, EditorLauncher } from './editor-launcher.ts'
 import { glyphSet } from './glyphs.ts'
+import { MOUSE_OFF, MOUSE_ON } from './mouse.ts'
 import { buildSplash } from './splash.ts'
 import {
   historyLine, HISTORY_LIMIT, parseHistory, serializeHistory,
@@ -68,7 +69,13 @@ const CSI = `${String.fromCharCode(0x1b)}[`
  */
 class TerminalGuard {
   private entered = false
-  constructor(private readonly output: TerminalOutput, private readonly alternateScreen: boolean) {}
+  private mouseOn = false
+  constructor(
+    private readonly output: TerminalOutput,
+    private readonly alternateScreen: boolean,
+    /** Whether the terminal can be asked for wheel reports at all. */
+    private readonly mouseCapable: boolean,
+  ) {}
 
   enter(): void {
     if (this.entered) return
@@ -77,10 +84,34 @@ class TerminalGuard {
     // Bracketed paste lets the composer tell a paste from typing, so multi-line
     // clipboard text lands in the draft instead of submitting line by line.
     this.output.write(`${CSI}?2004h`)
+    this.setMouse(true)
+  }
+
+  /**
+   * Turn wheel reporting on or off.
+   *
+   * @returns whether reporting is on afterwards — `false` on a terminal that
+   *   cannot report, so `/mouse` can say so instead of claiming a mode it has
+   *   not got.
+   */
+  setMouse(on: boolean): boolean {
+    const wanted = on && this.mouseCapable && this.entered
+    if (wanted !== this.mouseOn) {
+      this.output.write(wanted ? MOUSE_ON : MOUSE_OFF)
+      this.mouseOn = wanted
+    }
+    return this.mouseOn
+  }
+
+  get mouseEnabled(): boolean {
+    return this.mouseOn
   }
 
   restore(): void {
     if (!this.entered) return
+    // Reporting must stop before the buffer goes away, or the shell inherits a
+    // terminal that prints `[<64;…M` at every scroll.
+    this.setMouse(false)
     this.entered = false
     // Show the cursor and stop bracketed paste before leaving the buffer.
     this.output.write(`${CSI}?25h${CSI}?2004l`)
@@ -191,6 +222,9 @@ async function run(ctx: HarnessContext, config: Config, exit: (code: number) => 
   const guard = new TerminalGuard(
     internals.stdout,
     (config.alternateScreen ?? false) && capabilities.alternateScreen,
+    // Same test as the alternate screen: a TTY whose TERM is neither unset nor
+    // `dumb` is one that understands private mode sets.
+    capabilities.alternateScreen,
   )
   let cancel = (): void => {}
   let whenIdle = async (): Promise<void> => {}
@@ -254,7 +288,10 @@ async function run(ctx: HarnessContext, config: Config, exit: (code: number) => 
     ...(model === undefined ? {} : { model }),
     ...workspaceFacts,
     tips: ['/help for commands', 'Tab completes', '? for shortcuts'],
-  }, width, glyphSet(capabilities.unicode)))
+    // `--no-color` must reach the art too, not just the palette: the theme
+    // would blank the colours and leave a slab of half-blocks behind.
+  }, width, glyphSet(capabilities.unicode),
+  config.color === false ? 'none' : capabilities.colorLevel))
   // Mention completion never leaves the workspace: `resolve` on a joined path
   // collapses any `..` the prefix smuggled in, and a result outside is dropped.
   const workspaceReader = (relativePath: string): readonly DirectoryEntry[] => {
@@ -328,6 +365,14 @@ async function run(ctx: HarnessContext, config: Config, exit: (code: number) => 
           return store.setNotice(`Commands: ${names}`)
         }
         if (line === '/sessions') return store.setNotice(await sessionsNotice(ctx))
+        if (line === '/mouse') {
+          // Off hands the wheel back to the terminal — scrollback and drag-select
+          // work as usual, and the transcript pages with PgUp/PgDn only.
+          const on = guard.setMouse(!guard.mouseEnabled)
+          return store.setNotice(on
+            ? 'mouse wheel scrolls the transcript; hold Shift to select text'
+            : 'mouse wheel released to the terminal; PgUp/PgDn still page the transcript')
+        }
         if (line === '/new') {
           pendingSwitch = { task: '' }
           diagnostics.record('session-switch', { kind: 'new' })
@@ -426,6 +471,7 @@ async function run(ctx: HarnessContext, config: Config, exit: (code: number) => 
           description: 'Flush this session and resume another',
           input: { hint: '[session id | latest]' },
         },
+        { name: 'mouse', description: 'Toggle whether the wheel scrolls the transcript' },
         { name: 'quit', description: 'Flush and exit this TUI session' },
       ]
       const reserved = new Set(local.map(command => command.name))

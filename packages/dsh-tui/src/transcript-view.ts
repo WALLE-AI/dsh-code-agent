@@ -34,6 +34,11 @@ export interface TranscriptEntry {
   readonly diffStats?: { readonly added: number; readonly removed: number }
   /** Wall-clock start of a tool call, for the elapsed field on a running card. */
   readonly startedAtMs?: number
+  /**
+   * Tone of the status dot, when it differs from the entry's own. Only tool
+   * cards set it, and only from the card kind the tool itself declared.
+   */
+  readonly statusTone?: RowTone
 }
 
 /** Reusable per-node entry cache so a live append does not rebuild every card. */
@@ -94,6 +99,22 @@ const FOLD_ABOVE: Readonly<Record<string, number>> = { diff: 8, default: 3 }
  */
 const FOLD_MARGIN = 1
 
+/**
+ * Status-dot tone per card kind, so a glance down the transcript separates the
+ * commands from the edits from the reading. Keyed by `string`, not by
+ * `ToolCardKind`: the declared intent is untrusted input from the tool, so an
+ * unknown kind must miss rather than fail to compile. `generic` is absent on
+ * purpose too — a card the profile could not classify keeps the plain tool
+ * colour rather than borrowing a meaning it has not earned.
+ */
+const CARD_TONE: Readonly<Record<string, RowTone | undefined>> = Object.freeze({
+  terminal: 'tool-terminal',
+  diff: 'tool-diff',
+  search: 'tool-search',
+  read: 'tool-read',
+  web: 'tool-web',
+})
+
 function statusGlyph(status: ToolNode['status'], glyphs: GlyphSet): string {
   switch (status) {
     case 'pending': return glyphs.pending
@@ -140,19 +161,22 @@ function textEntry(node: Exclude<TranscriptNode, ToolNode>, glyphs: GlyphSet): T
         foldedByDefault: false, locations: [],
       }
     default: {
-      // Assistant prose is the only text that carries markup worth styling.
-      const styled = renderMarkdown(sanitizeText(node.text))
-      const rows = styled.slice(0, detail.length + 1)
+      // Assistant prose is the only text that carries markup worth rendering.
+      // The renderer emits one line per source line, so the header and the
+      // detail rows still line up with the split above — but the text is the
+      // rendered form now, markers consumed, tables laid out.
+      const rows = renderMarkdown(sanitizeText(node.text), glyphs).slice(0, detail.length + 1)
+      const first = rows[0]
       return {
         id: node.id, nodeKind: 'text', tone: 'assistant', depth: 0,
-        header: `${glyphs.bullet} ${header}`,
+        header: `${glyphs.bullet} ${first?.text ?? header}`,
         // The bullet is a plain run so the styled text still sums to the row.
-        ...(rows[0] === undefined
+        ...(first === undefined
           ? {}
-          : { headerSegments: [{ text: `${glyphs.bullet} ` }, ...rows[0].segments] }),
+          : { headerSegments: [{ text: `${glyphs.bullet} ` }, ...first.segments] }),
         detail: detail.map((line, index) => {
-          const segments = rows[index + 1]?.segments
-          return segments === undefined ? line : { ...line, segments }
+          const row = rows[index + 1]
+          return row === undefined ? line : { ...line, text: row.text, segments: row.segments }
         }),
         foldable: detail.length > 0, foldedByDefault: false, locations: [],
       }
@@ -167,6 +191,7 @@ function toolEntry(
   options: TranscriptOptions,
 ): TranscriptEntry {
   const card = buildToolCard(node, presentation, options)
+  const declaredTone = CARD_TONE[presentation.result?.card ?? presentation.call.card]
   const detail: readonly DetailLine[] = [
     ...(card.subtitle === undefined ? [] : [{ text: card.subtitle, tone: 'heading' as const }]),
     ...card.body,
@@ -192,6 +217,11 @@ function toolEntry(
     foldedByDefault: node.status === 'succeeded' && detail.length > foldAbove + FOLD_MARGIN,
     locations: card.locations,
     status: node.status,
+    // The kind is read from the *declared* intent rather than from the built
+    // card, which degrades to `generic` while a call has no result yet: the dot
+    // must not change colour halfway through a call it already classified.
+    // A failure outranks it — the dot's first job is to say what went wrong.
+    ...(node.status === 'failed' || declaredTone === undefined ? {} : { statusTone: declaredTone }),
     ...(card.diffStats === undefined ? {} : { diffStats: card.diffStats }),
     ...(startedAtMs === undefined ? {} : { startedAtMs }),
   }
@@ -352,6 +382,16 @@ function entryLines(
       ...(entry.headerSegments === undefined || entry.badge !== undefined
         ? {}
         : { segments: indented(indent, entry.headerSegments) }),
+      // The status dot is one cell wide and sits right after the indent, so it
+      // splits off as its own run without measuring anything. The rest of the
+      // header — title and badge alike — stays a single plain run in the
+      // entry's own tone.
+      ...(entry.statusTone === undefined ? {} : {
+        segments: [
+          { text: text.slice(0, indent.length + 1), tone: entry.statusTone },
+          { text: text.slice(indent.length + 1) },
+        ],
+      }),
     })
     if (folded) {
       if (entry.detail.length > 0) {

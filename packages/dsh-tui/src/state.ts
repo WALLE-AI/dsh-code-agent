@@ -249,6 +249,10 @@ export class TuiStore {
         text: line.text,
         tone: line.tone ?? ('system' as const),
         header: false,
+        // The banner's art *is* its styled runs: the whale and the wordmark are
+        // half-blocks whose colours carry the shape. Dropping the runs here left
+        // a grey slab on screen.
+        ...(line.segments === undefined ? {} : { segments: line.segments }),
       })),
       ...rows,
     ]

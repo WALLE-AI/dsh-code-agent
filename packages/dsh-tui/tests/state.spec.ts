@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from 'vitest'
 import { ApprovalQueue } from '../src/approval-queue.ts'
 import { QuestionQueue } from '../src/question-queue.ts'
+import { UNICODE_GLYPHS } from '../src/glyphs.ts'
+import { buildSplash } from '../src/splash.ts'
 import { TuiStore } from '../src/state.ts'
 
 describe('phase-zero terminal state', () => {
@@ -11,6 +13,24 @@ describe('phase-zero terminal state', () => {
     store.append({ seq: 3, kind: 'tool-call', text: 'three', name: 'bash', callId: 'c1' })
     expect(store.snapshot().lines.map(line => line.text))
       .toEqual(['● two', '▸ bash  [running]', ' ⎿ three'])
+  })
+
+  it('keeps the banner\'s styled runs, which are the art itself', () => {
+    const store = new TuiStore(10)
+    store.setColumns(80)
+    store.setHeader(width => buildSplash(
+      { title: 'DeepSeek Harness TUI', tips: [] }, width, UNICODE_GLYPHS, 'truecolor',
+    ))
+    const art = store.snapshot().lines.filter(line => line.entryId === 'splash')
+    // The whale and the wordmark are half-blocks whose colours carry the shape;
+    // a row that arrives without its runs paints as a grey slab.
+    expect(art.length).toBeGreaterThan(0)
+    const styled = art.filter(line => line.segments !== undefined)
+    expect(styled.length).toBeGreaterThan(0)
+    for (const line of styled) {
+      expect(line.segments?.map(segment => segment.text).join('')).toBe(line.text)
+      expect(line.segments?.some(segment => segment.color !== undefined)).toBe(true)
+    }
   })
 
   it('publishes reference-stable snapshots only when state changes', () => {

@@ -4,7 +4,7 @@
   "tuiVersion": "0.1.0",
   "harness": {
     "path": "opensource/deepseek-harness/deepseek-harness-master",
-    "commit": "47f943859bef60e4160492346772ded9b24f765a",
+    "sourceDigest": "9ec81c0de930b371d1838dea09b889838e158ad451574eafa3b747c124a2e950",
     "version": "0.1.0-rc.5",
     "sessionFormat": 0
   },
@@ -14,7 +14,10 @@
   },
   "toolchain": {
     "node": "^22.19.0 || >=24.0.0",
-    "verifiedNode": ["22.23.2", "24.14.0"],
+    "verifiedNode": [
+      "22.23.2",
+      "24.14.0"
+    ],
     "pnpm": "11.7.0",
     "typescript": "6.0.3",
     "ink": "5.2.1",

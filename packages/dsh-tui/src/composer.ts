@@ -5,6 +5,8 @@
  * surrogate pair or an accented character is one step.
  */
 
+import type { RowTone } from './styling.ts'
+
 export interface ComposerState {
   readonly draft: string
   /** Code-point index of the caret, always within `[0, length]`. */
@@ -26,6 +28,25 @@ export type ComposerDeletion =
 export const emptyComposer: ComposerState = Object.freeze({
   draft: '', cursor: 0, history: [], historyIndex: -1,
 })
+
+/**
+ * Tone of the composer prompt, by permission preset.
+ *
+ * The prompt is the one thing on screen at the moment of typing, so it is where
+ * the mode belongs: `danger-full-access` runs tools with no approval at all and
+ * has to look like it, and a read-only session should not read as one that can
+ * write. A preset this profile does not recognise keeps the ordinary tone
+ * rather than guessing at how permissive it is — the status line still names it
+ * in full.
+ *
+ * @param mode - `activity.permission.current`, as reported by the session.
+ */
+export function promptTone(mode: string | undefined): RowTone {
+  if (mode === undefined) return 'user'
+  if (mode.includes('danger')) return 'mode-danger'
+  if (mode.includes('read-only')) return 'mode-restricted'
+  return 'user'
+}
 
 // Ink strips a leading ESC from every chunk, so the opening bracketed-paste
 // marker can arrive without it. Both markers are removed wherever they occur:

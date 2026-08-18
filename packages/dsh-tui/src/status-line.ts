@@ -107,6 +107,13 @@ export function buildStatusModel(
       priority: 5,
     })
   }
+  // Last to be shown and first to go: it says how the run is being billed, not
+  // what it is doing. There is no TPS segment beside it because the projection
+  // reports no rate, and a computed one would be this profile's number wearing
+  // the Harness's authority.
+  if (activity.tokens?.cacheHitPercent !== undefined) {
+    left.push({ text: `cache ${String(activity.tokens.cacheHitPercent)}%`, priority: 6 })
+  }
 
   const right: StatusSegment[] = []
   if (context.branch !== undefined) right.push({ text: context.branch, priority: 1 })

@@ -1,6 +1,6 @@
 import fc from 'fast-check'
 import { describe, expect, it } from 'vitest'
-import type { ActivityCounters, ActivitySummary } from '../src/activity.ts'
+import { summarizeActivity, type ActivityCounters, type ActivitySummary } from '../src/activity.ts'
 import {
   buildStatusModel, renderContextBar, renderSegments,
   type StatusContext, type StatusSegment,
@@ -34,6 +34,17 @@ describe('status model', () => {
       .toEqual(['main', 'dsh-code-agent', 'fix the flush race'])
   })
 
+  it('shows the cache hit share, and drops it before anything else', () => {
+    const activity: ActivitySummary = {
+      ...ACTIVITY,
+      tokens: { input: 12_400, output: 830, cacheHitPercent: 76 },
+    }
+    const model = buildStatusModel(activity, COUNTERS, IDLE)
+    expect(model.left.map(segment => segment.text)).toContain('cache 76%')
+    const worst = model.left.reduce((a, b) => (b.priority > a.priority ? b : a))
+    expect(worst.text).toBe('cache 76%')
+  })
+
   it('measures context pressure only when a window was reported', () => {
     expect(buildStatusModel(ACTIVITY, COUNTERS, IDLE).bar).toEqual({ used: 45_000, total: 100_000 })
     expect(buildStatusModel({ planActive: false }, COUNTERS, IDLE).bar).toBeUndefined()
@@ -54,6 +65,30 @@ describe('status model', () => {
     }, { running: false, paused: false, unread: 0 })
     expect(model.left.map(segment => segment.text)).toEqual(['tools 0'])
     expect(model.right).toEqual([])
+  })
+})
+
+describe('cache hit share', () => {
+  it('divides cache reads by everything billed on the prompt side', () => {
+    // The three buckets are disjoint, so 30 of 100 billed input tokens is 30%.
+    const summary = summarizeActivity({
+      tokenUsage: {
+        uncachedInputTokens: 60, outputTokens: 5, cacheReadTokens: 30, cacheWriteTokens: 10,
+      },
+    })
+    expect(summary.tokens?.cacheHitPercent).toBe(30)
+  })
+
+  it('reports nothing when the provider has billed no input yet', () => {
+    const fresh = summarizeActivity({
+      tokenUsage: {
+        uncachedInputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0,
+      },
+    })
+    expect(fresh.tokens).toEqual({ input: 0, output: 0 })
+    // An older projection that predates the cache buckets gets no invented zero.
+    const partial = summarizeActivity({ tokenUsage: { uncachedInputTokens: 90, outputTokens: 3 } })
+    expect(partial.tokens?.cacheHitPercent).toBeUndefined()
   })
 })
 

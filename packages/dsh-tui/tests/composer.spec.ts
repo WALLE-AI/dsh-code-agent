@@ -2,7 +2,7 @@ import fc from 'fast-check'
 import { describe, expect, it } from 'vitest'
 import {
   backspaceComposer, caretLine, clearComposer, deleteComposer, emptyComposer,
-  historyComposer, insertComposer, moveComposer, newlineComposer, submitComposer,
+  historyComposer, insertComposer, moveComposer, newlineComposer, promptTone, submitComposer,
   type ComposerDeletion, type ComposerMotion, type ComposerState,
 } from '../src/composer.ts'
 
@@ -149,5 +149,20 @@ describe('caret invariants', () => {
         expect(state.cursor).toBe(cursor)
       },
     ))
+  })
+})
+
+describe('prompt tone', () => {
+  it('marks the modes that change what a keystroke can do', () => {
+    expect(promptTone('danger-full-access')).toBe('mode-danger')
+    expect(promptTone('read-only')).toBe('mode-restricted')
+    expect(promptTone('workspace-write')).toBe('user')
+  })
+
+  it('keeps the ordinary tone for a mode it cannot read', () => {
+    // Guessing how permissive an unknown preset is would be the one wrong
+    // answer here; the status line still shows its name in full.
+    expect(promptTone(undefined)).toBe('user')
+    expect(promptTone('some-future-preset')).toBe('user')
   })
 })

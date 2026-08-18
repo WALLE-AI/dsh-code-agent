@@ -18,7 +18,15 @@ export interface ActivitySummary {
   readonly todos?: { readonly total: number; readonly done: number; readonly active?: string }
   readonly permission?: { readonly current: string; readonly options: readonly PermissionOption[] }
   readonly context?: { readonly tokens?: number; readonly window?: number; readonly percent?: number }
-  readonly tokens?: { readonly input: number; readonly output: number }
+  readonly tokens?: {
+    readonly input: number
+    readonly output: number
+    /**
+     * Share of billed prompt tokens the provider served from its cache, over
+     * the whole durable log. Absent until something has been billed.
+     */
+    readonly cacheHitPercent?: number
+  }
   readonly subagent?: string
 }
 
@@ -80,6 +88,16 @@ export function summarizeActivity(values: Readonly<Record<string, unknown>>): Ac
   const window = count(pressure?.contextWindow)
   const input = count(usage?.uncachedInputTokens)
   const output = count(usage?.outputTokens)
+  const cacheRead = count(usage?.cacheReadTokens)
+  const cacheWrite = count(usage?.cacheWriteTokens)
+  // The three prompt-side buckets are disjoint, so their sum is what was billed
+  // on the way in — the same definition the Harness's own stats line uses
+  // (`ui-conversation/.../StatsLine.tsx:cacheHitPercent`). Nothing is inferred
+  // when a bucket is missing: no denominator, no figure.
+  const billed = (input ?? 0) + (cacheRead ?? 0) + (cacheWrite ?? 0)
+  const cacheHitPercent = cacheRead === undefined || billed === 0
+    ? undefined
+    : Math.round((cacheRead / billed) * 100)
   const goal = record(values.goal)
   const title = label(values.title)
   const goalText = label(goal?.text ?? goal?.title ?? values.goal)
@@ -102,7 +120,13 @@ export function summarizeActivity(values: Readonly<Record<string, unknown>>): Ac
     }),
     ...(input === undefined && output === undefined
       ? {}
-      : { tokens: { input: input ?? 0, output: output ?? 0 } }),
+      : {
+        tokens: {
+          input: input ?? 0,
+          output: output ?? 0,
+          ...(cacheHitPercent === undefined ? {} : { cacheHitPercent }),
+        },
+      }),
     ...(label(subagent?.name) === undefined ? {} : { subagent: label(subagent?.name) as string }),
   }
 }

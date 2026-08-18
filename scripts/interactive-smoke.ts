@@ -238,6 +238,11 @@ try {
       throw new Error(`TUI did not enter and restore the alternate screen\n${transcript.slice(-8000)}`)
     }
   }
+  // A terminal left reporting the wheel prints `[<64;…M` into the user's shell
+  // at every scroll, so the mode must be set and cleared on every run.
+  if (!transcript.includes('\u001B[?1006h') || !transcript.includes('\u001B[?1006l')) {
+    throw new Error(`TUI did not enable and restore mouse reporting\n${transcript.slice(-8000)}`)
+  }
   if (!followupEnterSent || !helpEnterSent || !quitEnterSent) {
     throw new Error(`TUI composer did not complete follow-up + /help + /quit\n${transcript.slice(-8000)}`)
   }

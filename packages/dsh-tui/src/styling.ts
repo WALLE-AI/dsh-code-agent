@@ -19,6 +19,13 @@ export type RowTone =
   | TranscriptTone
   | 'diff-add' | 'diff-remove' | 'diff-hunk'
   | 'code' | 'heading' | 'quote' | 'bullet' | 'badge'
+  // Tool card kinds, worn by the status dot only. They say what a call *does*
+  // — run, edit, look — which is the one thing worth a glance before the title
+  // is read. The kind comes from the card the tool declared, never from its
+  // name: a tool this profile has never heard of stays plain `tool`.
+  | 'tool-terminal' | 'tool-diff' | 'tool-search' | 'tool-read' | 'tool-web'
+  // Permission modes, worn by the composer prompt.
+  | 'mode-restricted' | 'mode-danger'
 
 /** One body row of a tool card, with the tone it should be painted in. */
 export interface DetailLine {
@@ -34,6 +41,19 @@ export interface StyledSegment {
   readonly tone?: RowTone
   readonly bold?: boolean
   readonly dim?: boolean
+  readonly italic?: boolean
+  readonly strikethrough?: boolean
+  /**
+   * Literal colours, overriding the tone.
+   *
+   * The deliberate exception to "a tone names a meaning, the theme decides what
+   * it looks like": brand art *is* its colours, and a half-block sprite needs a
+   * foreground and a background per cell, which no semantic tone can express.
+   * Nothing but `brand.ts` should set these — everything else must go through a
+   * tone so the palette stays in one place and degrades with the terminal.
+   */
+  readonly color?: string
+  readonly background?: string
 }
 
 /** Wrap plain rows that carry no tone of their own. */

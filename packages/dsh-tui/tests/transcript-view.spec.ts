@@ -3,6 +3,7 @@ import type { ToolNode, ToolPresentation, TranscriptNode } from '../src/contract
 import {
   buildTranscriptEntries, currentToolEntryId, entryFolded, transcriptLines,
 } from '../src/transcript-view.ts'
+import { displayWidth } from '../src/terminal-text.ts'
 
 function generic(node: ToolNode): ToolPresentation {
   return { call: { card: 'generic', title: node.name, rawInput: node.input } }
@@ -32,6 +33,30 @@ describe('transcript entries', () => {
     expect(entryFolded(entries[0]!, folded)).toBe(true)
     folded.add('tool:ok')
     expect(entryFolded(entries[0]!, folded)).toBe(false)
+  })
+
+  it('renders assistant markdown without shifting a line', () => {
+    const text = [
+      '## 文件与代码操作',
+      '| 工具 | 用途 |',
+      '|------|------|',
+      '| **read** | 读取文本文件内容 |',
+    ].join('\n')
+    const entries = buildTranscriptEntries([
+      { id: 'm1', kind: 'assistant', text, firstSeq: 1, lastSeq: 1 },
+    ], generic)
+    const entry = entries[0]
+    // One row per source line: the header takes the first, the detail rows the
+    // rest, and the fold count is that length.
+    expect(entry?.detail).toHaveLength(3)
+    expect(entry?.header).toBe('● 文件与代码操作')
+    const rendered = [entry?.header ?? '', ...(entry?.detail ?? []).map(row => row.text)].join('\n')
+    for (const marker of ['##', '**', '|---']) expect(rendered).not.toContain(marker)
+    expect(entry?.detail[1]?.text).toMatch(/^─+┼─+$/)
+    // The columns are aligned, so the separator sits on one terminal column in
+    // both rows — `工具` is two characters and four cells wide, `read` four of each.
+    const column = (row: string): number => displayWidth(row.slice(0, row.indexOf('│')))
+    expect(column(entry?.detail[0]?.text ?? '')).toBe(column(entry?.detail[2]?.text ?? ''))
   })
 
   it('collapses reasoning and marks interrupted tools', () => {
@@ -84,6 +109,31 @@ describe('transcript entries', () => {
     expect(currentToolEntryId(entries, lines, lines.length)).toBe('tool:b')
     expect(currentToolEntryId(entries, lines, 1)).toBe('tool:a')
     expect(currentToolEntryId([], [], 0)).toBeUndefined()
+  })
+
+  it('tones the status dot by the card kind the tool declared', () => {
+    const present = (card: 'terminal' | 'read' | 'generic') => (node: ToolNode): ToolPresentation =>
+      ({ call: { card, title: node.name } })
+    const [run] = buildTranscriptEntries([tool({ callId: 'a', id: 'tool:a' })], present('terminal'))
+    const [read] = buildTranscriptEntries([tool({ callId: 'b', id: 'tool:b' })], present('read'))
+    expect(run?.statusTone).toBe('tool-terminal')
+    expect(read?.statusTone).toBe('tool-read')
+    // An unclassified card borrows no meaning, and a failure stays red.
+    expect(buildTranscriptEntries([tool({ callId: 'c', id: 'tool:c' })], generic)[0]?.statusTone)
+      .toBeUndefined()
+    expect(buildTranscriptEntries(
+      [tool({ callId: 'd', id: 'tool:d', status: 'failed' })], present('terminal'),
+    )[0]?.statusTone).toBeUndefined()
+  })
+
+  it('splits the dot into its own run without disturbing the row text', () => {
+    const entries = buildTranscriptEntries(
+      [tool({ callId: 'a', id: 'tool:a', output: 'done' })],
+      (node): ToolPresentation => ({ call: { card: 'terminal', title: node.name } }),
+    )
+    const header = transcriptLines(entries)[0]
+    expect(header?.segments?.[0]).toEqual({ text: '✓', tone: 'tool-terminal' })
+    expect(header?.segments?.map(segment => segment.text).join('')).toBe(header?.text)
   })
 
   it('survives a throwing tool presenter', () => {

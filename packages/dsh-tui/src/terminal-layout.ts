@@ -1,16 +1,32 @@
+/**
+ * One row per entry of `APPROVAL_CHOICES` in `app.tsx`. `ApprovalDecision` is a
+ * closed set, so this does not vary at runtime; the approval regression test in
+ * `app-view.spec.tsx` fails if the two ever disagree.
+ */
+const APPROVAL_CHOICE_ROWS = 2
+
 export interface TerminalLayoutInput {
   rows: number
   interactive: boolean
   approval: boolean
-  approvalReason: boolean
+  /**
+   * Rows the approval preview would like: the call's header, the first lines of
+   * its body and the escalation reason. Clamped to the policy limit and then to
+   * whatever the budget leaves.
+   */
+  approvalPreviewRows?: number
   question?: {
     detail: boolean
     optionCount: number
     customVisible: boolean
   }
   commandCount: number
-  /** Open list modal (command palette or session picker) and its entry count. */
-  listModal?: { count: number }
+  /**
+   * An open overlay region and the rows its entries would like. Every list that
+   * takes over the composer's space — palette, picker — is the same region, so
+   * the budget knows it by shape rather than by which one is showing.
+   */
+  overlay?: { rows: number }
   notice: boolean
   error: boolean
   /** Rows the multi-line composer needs; clamped to the policy maximum. */
@@ -32,6 +48,8 @@ export interface TerminalLayoutPolicy {
   paletteLimit: number
   /** Rows the goal/todo panel may use. */
   todoRowLimit: number
+  /** Rows the approval preview may use. */
+  approvalPreviewLimit: number
 }
 
 export interface TerminalLayout extends TerminalLayoutPolicy {
@@ -47,7 +65,10 @@ export interface TerminalLayout extends TerminalLayoutPolicy {
   /** The working line fits above the composer. */
   showWorking: boolean
   showNotice: boolean
-  showApprovalReason: boolean
+  /** Approval preview rows the frame actually reserved. */
+  approvalPreviewRows: number
+  /** The blank row separating the approval from the transcript above it. */
+  showApprovalMargin: boolean
   showQuestionDetail: boolean
 }
 
@@ -60,12 +81,21 @@ export function terminalLayoutPolicy(rows: number): TerminalLayoutPolicy {
     composerRowLimit: compact ? 1 : 3,
     paletteLimit: compact ? 2 : 6,
     todoRowLimit: compact ? 0 : 2,
+    approvalPreviewLimit: compact ? 1 : 5,
   }
 }
 
 export function terminalLayout(input: TerminalLayoutInput): TerminalLayout {
-  const rows = Math.max(1, Math.floor(input.rows))
-  const policy = terminalLayoutPolicy(rows)
+  const terminalRows = Math.max(1, Math.floor(input.rows))
+  /**
+   * One row of headroom, and it is not cosmetic. Ink repaints incrementally
+   * only while the frame is shorter than the terminal; at `outputHeight >=
+   * stdout.rows` it falls back to erasing the whole screen and rewriting it
+   * (`ink.js:121`). A frame sized to exactly `rows` therefore clears on every
+   * render, which reads as a hard flicker once anything animates.
+   */
+  const rows = Math.max(1, terminalRows - 1)
+  const policy = terminalLayoutPolicy(terminalRows)
   const composerRows = Math.max(1, Math.min(policy.composerRowLimit, input.composerRows ?? 1))
   let showHeader = true
   let showStatus = true
@@ -73,7 +103,10 @@ export function terminalLayout(input: TerminalLayoutInput): TerminalLayout {
   let showWorking = input.working === true
   let todoRows = Math.max(0, Math.min(policy.todoRowLimit, input.todoRows ?? 0))
   let showNotice = input.notice && !(policy.compact && input.error)
-  const showApprovalReason = input.approvalReason && !policy.compact
+  let showApprovalMargin = true
+  let approvalPreviewRows = Math.max(
+    0, Math.min(policy.approvalPreviewLimit, input.approvalPreviewRows ?? 0),
+  )
   const showQuestionDetail = input.question?.detail === true && !policy.compact
 
   const fixedRows = (): number => {
@@ -81,13 +114,17 @@ export function terminalLayout(input: TerminalLayoutInput): TerminalLayout {
     let total = 1 + Number(showHeader) + Number(showStatus) + todoRows
       + Number(showStatus && showContextBar) + Number(showWorking)
     if (input.approval) {
-      total += 2 + Number(showApprovalReason)
+      // A separating blank row, the `Approve <tool>?` title, the preview, and
+      // one row per answer. Title and answers are not optional: they name the
+      // tool and *are* the interaction.
+      total += Number(showApprovalMargin) + 1 + APPROVAL_CHOICE_ROWS + approvalPreviewRows
     } else if (input.question !== undefined) {
       total += 3 + Number(showQuestionDetail)
         + Math.min(input.question.optionCount, policy.optionWindowSize)
         + Number(input.question.customVisible)
-    } else if (input.listModal !== undefined) {
-      total += 2 + Math.min(input.listModal.count, policy.paletteLimit)
+    } else if (input.overlay !== undefined) {
+      // Two more for the pane's title row and its scroll hint.
+      total += 2 + Math.min(input.overlay.rows, policy.paletteLimit)
     } else if (input.interactive) {
       total += 1 + composerRows + Math.min(input.commandCount, policy.commandLimit)
     }
@@ -105,6 +142,11 @@ export function terminalLayout(input: TerminalLayoutInput): TerminalLayout {
   if (fixedRows() >= rows) showStatus = false
   if (fixedRows() >= rows) showHeader = false
   if (fixedRows() >= rows) showNotice = false
+  // Last, because the preview is the evidence the decision turns on. It goes
+  // only when the alternative is pushing the answers themselves off the screen.
+  while (approvalPreviewRows > 0 && fixedRows() >= rows) approvalPreviewRows--
+  // On a terminal this short the blank spacer is the last row worth anything.
+  if (fixedRows() >= rows) showApprovalMargin = false
 
   return {
     ...policy,
@@ -116,7 +158,8 @@ export function terminalLayout(input: TerminalLayoutInput): TerminalLayout {
     showStatus,
     showContextBar,
     showNotice,
-    showApprovalReason,
+    approvalPreviewRows,
+    showApprovalMargin,
     showQuestionDetail,
   }
 }
