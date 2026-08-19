@@ -47,6 +47,19 @@ describe('terminal capability detection', () => {
     expect(ssh.notes.join(' ')).toContain('SSH')
   })
 
+  // Windows sets no TERM anywhere, so treating an empty one as "assume the
+  // worst" cost every Windows user the alternate screen.
+  it('keeps the alternate screen on Windows, which never sets TERM', () => {
+    const windows = detectTerminal({ WT_SESSION: 'abc' }, tty, tty, 'win32')
+    expect(windows.alternateScreen).toBe(true)
+    expect(windows.notes.join(' ')).not.toContain('TERM is unset')
+
+    expect(detectTerminal({ TERM: 'dumb' }, tty, tty, 'win32').alternateScreen).toBe(false)
+    const stripped = detectTerminal({}, tty, tty, 'linux')
+    expect(stripped.alternateScreen).toBe(false)
+    expect(stripped.notes.join(' ')).toContain('TERM is unset')
+  })
+
   it('notes tiny terminals and legacy Windows consoles', () => {
     const tiny = detectTerminal({ TERM: 'xterm' }, tty, { isTTY: true, columns: 10, rows: 3 }, 'linux')
     expect(tiny.notes.join(' ')).toContain('10x3')

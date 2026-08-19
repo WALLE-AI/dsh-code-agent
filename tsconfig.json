@@ -12,7 +12,17 @@
     "allowImportingTsExtensions": true,
     "verbatimModuleSyntax": true,
     "jsx": "react-jsx",
+    // The launcher bin is plain ESM (an installed copy must boot without a
+    // loader), so it is checked here through its JSDoc annotations rather than
+    // compiled. It only imports node: builtins, so this pulls in no JS deps.
+    "allowJs": true,
+    "checkJs": true,
     "types": ["node", "vitest/globals"]
   },
-  "include": ["packages/**/*.ts", "packages/**/*.tsx", "scripts/**/*.ts"]
+  "include": [
+    "packages/**/*.ts",
+    "packages/**/*.tsx",
+    "packages/dsh-tui/bin/*.mjs",
+    "scripts/**/*.ts"
+  ]
 }

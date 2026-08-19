@@ -56,20 +56,25 @@ pnpm run check:real:interactive  # 真实模型 + 真实工具 + follow-up + /qu
 pnpm run check:real:approval     # read-only 预设下的真实升权与审批决策
 pnpm run build:lib           # 生成发布用 lib/
 
-pnpm tui -- "检查当前改动并运行测试"
-pnpm tui -- --interactive --alternate-screen "修复登录竞态"
-pnpm tui -- --interactive --resume latest
-pnpm tui -- --permission read-only "review current changes"
+pnpm run check:cli           # dshcodecli 启动器（help / 非 TTY / 非法预设 / installed 接线）
+
+dshcodecli "检查当前改动并运行测试"
+dshcodecli -i --alternate-screen "修复登录竞态"
+dshcodecli -i --resume latest
+dshcodecli --permission read-only "review current changes"
 ```
 
-开发链路通过 `--conditions=development` 让 profile 解析 `src/*.ts`；打包产物默认
-解析编译后的 `lib/*.js`。
+`dshcodecli`（`bin/dshcodecli.mjs`，`pnpm link --global` 后任意目录可用）是唯一入口，
+`pnpm tui` 与 `scripts/run-tui.sh` 已经变成它的薄别名。命令在本仓库内解析到时走 dev 模式：
+以 `--conditions=development` 让 profile 解析 `src/*.ts`；装到别处则找已安装的 `dsh`
+并解析编译后的 `lib/*.js`。两种模式都以**你敲命令时所在的目录**为工作区。
 
 ## 当前限制
 
-- `Ctrl+E` 以 detached 进程打开编辑器，适合 GUI/远程编辑器；需要接管 TTY 的终端
+- `Ctrl+X` 以 detached 进程打开编辑器，适合 GUI/远程编辑器；需要接管 TTY 的终端
   编辑器不在 P0 范围。
 - SSH/tmux 已探测并降级，但人工环境矩阵尚未执行；Linux/macOS 的 PTY 套件未在本
   环境运行。
-- 无鼠标、图像协议、PTY 面板、右侧 activity 面板与会话全文搜索（P1）。
+- 鼠标只接管滚轮（应用内翻页），接管期间原生拖选需按住 `Shift`，`/mouse` 可交还终端；
+  图像协议、PTY 面板、右侧 activity 面板与会话全文搜索仍未做（P1）。
 - 内置 profile 注册需上游 `PROFILE_TEMPLATES` 配合；本仓库按 ADR 0001 只用外置 bundle。

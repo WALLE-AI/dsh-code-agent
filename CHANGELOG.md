@@ -2,6 +2,34 @@
 
 All notable changes to the DeepSeek Harness TUI profile.
 
+## 0.1.2
+
+### Fixed
+
+- **`dshcodecli` finds your API key from any directory.** The launcher only read
+  `.env` from the exact directory the command was typed in, so a key at a project
+  root worked there and nowhere else — every other directory failed the first
+  turn with `MISSING_CREDENTIAL llm-deepseek: no API key for provider route
+  "deepseek-official"`, and the message could only point at the environment or
+  the web Models page. `.env` is now read from the working directory, then each
+  directory above it, then `$DSH_HOME/.env` (`~/.dsh/.env`), which is the
+  machine-wide place to set a key once. The files layer per variable rather than
+  first-file-wins, so a project `.env` that sets only `DEEPSEEK_BASE_URL` no
+  longer hides the only key on the machine. When nothing anywhere has a key —
+  including `$DSH_HOME/.credentials.yaml` — the launcher says so and names the
+  file to write, before the TUI takes the screen.
+
+### Added
+
+- **`npm run publish:npm` is the release command.** `package:npm` still stops at
+  the tarball by design; this is the other half, and the only thing in the repo
+  that uploads. It refuses to run against a read-only mirror, refuses a version
+  that npm already has (naming the versions that exist and the bump to make),
+  checks the login against the publish registry rather than the configured one,
+  refuses a dirty tree without `--allow-dirty`, and re-reads the registry
+  afterwards instead of trusting the exit code. Without `--yes` it is a dry run
+  that performs every check and uploads nothing.
+
 ## 0.1.0 — unreleased preview
 
 The first coding-loop-complete build of the terminal profile: create or resume a
@@ -22,6 +50,55 @@ session durable.
 enforced by `npm run check:upstream`.
 
 ### Added
+
+- **`dshcodecli` is the launch command.** One binary (`bin/dshcodecli.mjs`),
+  usable from any directory once linked or installed, replacing the
+  run-it-from-the-repo-root `pnpm tui -- …` incantation. It picks its mode from
+  where it resolves: inside this checkout it runs the vendored CLI from source
+  with `--conditions=development`; installed elsewhere it uses the installed
+  `dsh` (`DSH_CLI` → a `@deepseek-ai/dsh` dependency → `PATH`, and naming
+  `DSH_CLI` forces this mode). Either way it writes `$DSH_HOME/profiles/tui`,
+  links this package in, reads `DEEPSEEK_API`/`DEEPSEEK_URL` from a `.env` next
+  to you without overwriting anything you exported yourself, adds
+  `--use-env-proxy` when a proxy is set and the runtime is new enough to accept
+  it, and runs **in the directory you typed the command in** — that directory,
+  not the checkout, is the workspace the agent edits. `-i` is now accepted as
+  the short form of `--interactive`, `--help` names the command you actually
+  typed, and shell completions cover both `dshcodecli` and `dsh`.
+
+- **`npm run package:npm` builds the publishable tarball.** The workspace
+  package is `@deepseek-ai/dsh-tui` because that is the bundle specifier
+  `cordis.patch.yml` imports and the name the profile links the directory under
+  — and it belongs to someone else's npm org. The script stages a copy renamed
+  to `dshcodecli`, drops `private`, and adds `@deepseek-ai/dsh` as a real
+  dependency so a single `npm i -g dshcodecli` brings the CLI too; the profile
+  still links the installed directory in as `@deepseek-ai/dsh-tui` by absolute
+  path, so both names keep working. It installs the tarball into a throwaway
+  project and drives the command before reporting a sha256, and it stops short
+  of publishing. This artifact is the cross-platform one: the package is pure
+  JavaScript and every native dependency is resolved per machine by npm.
+
+- **A Windows `dsh.cmd` shim is started through a shell.** Node has refused to
+  execute batch files directly since the 2024 argument-injection fix, so the
+  `PATH` fallback would have failed on exactly the machines that need it.
+
+- **Two packaging scripts that produce something you can hand to a machine that
+  has neither this checkout nor a network.** `npm run package:offline` builds
+  `dist/dshcodecli-<version>/` (and a tarball): the profile, the published
+  `@deepseek-ai/dsh`, and every runtime dependency, installed once on the build
+  machine, plus `dshcodecli` / `dshcodecli.cmd` launchers — the target needs only
+  Node ≥22.19. Both are specific to the platform they were built on — six
+  packages in the `dsh` closure ship a compiled binary as a per-platform
+  optional dependency, and npm installs only the variant matching the build
+  machine — so the manifest and the bundle's own README name that platform and
+  list those packages. `npm run package:sea` goes one step further and
+  injects the bundle into a copy of the Node binary as a single-file executable,
+  which needs no Node at all; it unpacks itself into `$XDG_CACHE_HOME/dshcodecli`
+  on first run, because the Harness resolves profiles through real directories.
+  Both scripts drive their own output through help, a non-TTY refusal and a
+  profile-write check before reporting a size and a sha256. The bundled `dsh` is
+  the released version rather than the pinned `rc.5`, which was never published;
+  the exact version travels in the bundle's `MANIFEST.json`.
 
 - **The mouse wheel scrolls the transcript** — a wheel roll used to scroll the
   terminal's own buffer, which holds none of the session: the frame is repainted
@@ -239,6 +316,13 @@ enforced by `npm run check:upstream`.
 
 ### Changed
 
+- **`pnpm tui` and `scripts/run-tui.sh` are now thin aliases for `dshcodecli`**
+  (the latter still forcing `--interactive`), and `scripts/launch-tui.ts` is
+  gone — its profile-preparation logic moved into the new bin unchanged, and the
+  shell script's `.env` and proxy handling moved there too, so both work from
+  any directory instead of only from the repository root. A new `check:cli` gate
+  covers the launcher, and `check:packed` now fails if the tarball ships without
+  it.
 - **Assistant prose is rendered as markdown, not just tinted.** The syntax is
   consumed and only the styling survives: headings drop their hashes, bold,
   italic, strikethrough, code spans and links lose their delimiters, list
@@ -264,6 +348,13 @@ enforced by `npm run check:upstream`.
 
 ### Fixed
 
+- Windows lost the alternate screen buffer on every machine. `detectTerminal`
+  read an empty `TERM` as "unknown terminal, assume the worst" and reported
+  `TERM is unset or dumb; the alternate screen buffer is disabled` — but Windows
+  never sets `TERM`, not in `cmd`, not in PowerShell, not in Windows Terminal,
+  so the condition was true for every Windows user. An empty `TERM` now only
+  disables the alternate screen off Windows, where it really does mean the
+  caller stripped it; `TERM=dumb` still disables it everywhere.
 - The screen flickered on every repaint once anything animated. Ink only
   repaints incrementally while the frame is shorter than the terminal; at
   `outputHeight >= stdout.rows` it erases the whole screen and rewrites it

@@ -13,3 +13,4 @@ packages/*/lib/
 *.tsbuildinfo
 .real-approval-workspace-*/
 real-smoke-report.log
+dist/

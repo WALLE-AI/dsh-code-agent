@@ -6,17 +6,26 @@ the terminal only shows what happened and forwards your input.
 
 ## 1. Install and start
 
-The profile is loaded through `dsh`. In this repository the development
-launcher creates `$DSH_HOME/profiles/tui`, links the local package into it, and
-starts the real CLI:
+The profile is loaded through `dsh`. The `dshcodecli` command is the launcher in
+front of it: it creates `$DSH_HOME/profiles/tui`, links the package into it,
+loads credentials from the `.env` files described in §1.1, and starts the real
+CLI.
 
 ```bash
 pnpm install
-pnpm tui -- "fix the race in the login module and run the related tests"
-pnpm tui -- --interactive "review the working tree"
+pnpm link --global --dir packages/dsh-tui   # makes dshcodecli available anywhere
+
+dshcodecli "fix the race in the login module and run the related tests"
+dshcodecli -i "review the working tree"
+dshcodecli -i --resume latest
 ```
 
-An installed setup runs the same thing directly:
+The directory you run it in is the workspace the agent reads and edits. Inside
+this repository the command runs the vendored CLI from source; installed
+elsewhere it uses the installed `dsh` (override with `DSH_CLI`). `pnpm tui --`
+and `./scripts/run-tui.sh` remain as aliases.
+
+Nothing stops you from invoking the profile directly:
 
 ```bash
 dsh --profile tui "fix the race in the login module"
@@ -27,12 +36,33 @@ dsh --profile tui --interactive --resume latest
 points at `--profile headless`; nothing is written to `stdout` in interactive
 mode except the rendered frame.
 
+### 1.1 Where the API key comes from
+
+`DEEPSEEK_API_KEY` (or the legacy `DEEPSEEK_API`) is read from the first of
+these that has it, and `DEEPSEEK_BASE_URL` / `DEEPSEEK_URL` alongside it:
+
+1. the environment you launch in — `DEEPSEEK_API_KEY=sk-… dshcodecli …` always wins;
+2. `.env` in the working directory, then in each directory above it, so a key at
+   a project root works from any subdirectory of that project;
+3. `$DSH_HOME/.env` (`~/.dsh/.env` by default) — the machine-wide default, which
+   is what to write if you want the command to work in every directory:
+
+```bash
+umask 077 && printf 'DEEPSEEK_API_KEY=sk-…\n' >> ~/.dsh/.env
+```
+
+The layers merge per variable rather than per file: a project `.env` that sets
+only `DEEPSEEK_BASE_URL` still gets its key from `~/.dsh/.env`. A key stored
+through the Harness credentials service (`$DSH_HOME/.credentials.yaml`) is used
+when no `.env` supplies one. When nothing has a key, `dshcodecli` says so before
+the TUI opens instead of leaving it to fail on the first turn.
+
 ## 2. Command line
 
 | Flag | Meaning |
 |---|---|
 | `[task...]` | The first message. Required unless `--resume` is given. |
-| `--interactive` | Keep the session open after the first task for follow-ups. |
+| `-i`, `--interactive` | Keep the session open after the first task for follow-ups. |
 | `--resume [session]` | Resume by session id, unambiguous id prefix, or `latest`. |
 | `--permission <preset>` | `read-only`, `workspace-write` (default), `danger-full-access`. |
 | `--model <route>` | `provider/model[:reasoning-effort]`, or `model[:effort]`. This run only. |
@@ -44,7 +74,13 @@ mode except the rendered frame.
 Invalid values fail **before** the terminal enters raw mode.
 
 Shell completions live in `packages/dsh-tui/completions/` for bash, zsh, and
-fish.
+fish; each one covers both `dshcodecli` and `dsh`.
+
+```bash
+source packages/dsh-tui/completions/dsh-tui.bash      # bash
+cp packages/dsh-tui/completions/dsh-tui.zsh ~/.zfunc/_dsh   # zsh, then compinit
+cp packages/dsh-tui/completions/dsh-tui.fish ~/.config/fish/completions/dsh.fish
+```
 
 ## 3. Keys
 

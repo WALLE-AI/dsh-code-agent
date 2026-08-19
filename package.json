@@ -19,14 +19,20 @@
     "check:runtime": "node --import tsx/esm scripts/runtime-matrix.ts",
     "check:node22": "corepack pnpm dlx node@22.23.2 --import tsx/esm scripts/runtime-matrix.ts",
     "check:real": "node --import tsx/esm scripts/real-api-smoke.ts",
-    "check": "npm run check:upstream && npm run build && npm run test && npm run check:profile && npm run check:interactive && npm run check:resume && npm run check:cancel && npm run check:bench && npm run check:packed && npm run check:soak:quick",
-    "tui": "node --import tsx/esm scripts/launch-tui.ts",
+    "check": "npm run check:upstream && npm run build && npm run test && npm run check:profile && npm run check:cli && npm run check:interactive && npm run check:resume && npm run check:cancel && npm run check:bench && npm run check:packed && npm run check:soak:quick",
+    "dshcodecli": "node packages/dsh-tui/bin/dshcodecli.mjs",
+    "tui": "node packages/dsh-tui/bin/dshcodecli.mjs",
+    "check:cli": "node --import tsx/esm scripts/cli-smoke.ts",
+    "package:npm": "node --import tsx/esm scripts/package-npm.ts",
+    "package:offline": "node --import tsx/esm scripts/package-offline.ts",
+    "package:sea": "node --import tsx/esm scripts/package-sea.ts",
     "build:lib": "tsc -p packages/dsh-tui/tsconfig.build.json",
     "check:packed": "node --import tsx/esm scripts/packed-install-smoke.ts",
     "check:release": "node --import tsx/esm scripts/release-gate.ts",
     "check:cancel": "node --import tsx/esm scripts/cancel-smoke.ts",
     "check:real:interactive": "node --import tsx/esm scripts/real-interactive-smoke.ts",
-    "check:real:approval": "node --import tsx/esm scripts/real-interactive-smoke.ts --approval"
+    "check:real:approval": "node --import tsx/esm scripts/real-interactive-smoke.ts --approval",
+    "publish:npm": "node --import tsx/esm scripts/publish-npm.ts"
   },
   "dependencies": {
     "commander": "^14.0.0",
@@ -38,6 +44,7 @@
     "@types/react": "~18.3.1",
     "fast-check": "^4.9.0",
     "node-pty": "^1.1.0",
+    "postject": "1.0.0-alpha.6",
     "tsx": "^4.20.3",
     "typescript": "^6.0.3",
     "vitest": "^3.2.4"

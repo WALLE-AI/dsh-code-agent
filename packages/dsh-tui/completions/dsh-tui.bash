@@ -1,11 +1,11 @@
-# bash completion for `dsh --profile tui`.
+# bash completion for `dshcodecli` and `dsh --profile tui`.
 # Install: source this file, or copy it into /etc/bash_completion.d/.
 
 _dsh_tui_complete() {
   local current previous options presets
   current="${COMP_WORDS[COMP_CWORD]}"
   previous="${COMP_WORDS[COMP_CWORD - 1]}"
-  options="--alternate-screen --interactive --no-color --resume --permission --model --diagnostic-log --help"
+  options="-i --alternate-screen --interactive --no-color --resume --permission --model --diagnostic-log --help"
   presets="read-only workspace-write danger-full-access"
 
   case "${previous}" in
@@ -35,4 +35,4 @@ _dsh_tui_complete() {
   return 0
 }
 
-complete -F _dsh_tui_complete dsh
+complete -F _dsh_tui_complete dsh dshcodecli

@@ -58,6 +58,11 @@ const manifest = JSON.parse(readFileSync(join(installed, 'package.json'), 'utf8'
 for (const required of ['cordis.patch.yml', 'package.json']) {
   if (!existsSync(join(installed, required))) throw new Error(`tarball is missing ${required}`)
 }
+// The launcher is what an installed copy is used through; a missing `files`
+// entry would leave `dshcodecli` pointing at nothing.
+for (const required of ['bin/dshcodecli.mjs', 'bin/launch.mjs']) {
+  if (!existsSync(join(installed, required))) throw new Error(`tarball is missing ${required}`)
+}
 const entry = manifest.exports?.['.']
 const entryPath = typeof entry === 'string' ? entry : (entry as { default?: string } | undefined)?.default
 if (entryPath === undefined || !existsSync(join(installed, entryPath))) {

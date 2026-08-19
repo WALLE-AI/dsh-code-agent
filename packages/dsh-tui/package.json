@@ -1,12 +1,15 @@
 {
   "name": "@deepseek-ai/dsh-tui",
   "description": "Keyboard-first terminal UI profile for the DeepSeek Harness agent runtime",
-  "version": "0.1.0",
+  "version": "0.1.2",
   "private": true,
   "type": "module",
   "license": "MIT",
   "engines": {
     "node": "^22.19.0 || >=24.0.0"
+  },
+  "bin": {
+    "dshcodecli": "bin/dshcodecli.mjs"
   },
   "main": "lib/plugin.js",
   "types": "lib/types/plugin.d.ts",
@@ -25,6 +28,7 @@
     "./package.json": "./package.json"
   },
   "files": [
+    "bin/*.mjs",
     "lib/**/*.js",
     "lib/types/**/*.d.ts",
     "src/**/*.ts",
@@ -52,8 +56,14 @@
     "@deepseek-ai/dsh-session": ">=0.1.0-rc.5"
   },
   "peerDependenciesMeta": {
-    "@deepseek-ai/dsh-agent": { "optional": true },
-    "@deepseek-ai/dsh-llm": { "optional": true },
-    "@deepseek-ai/dsh-session": { "optional": true }
+    "@deepseek-ai/dsh-agent": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-llm": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-session": {
+      "optional": true
+    }
   }
 }

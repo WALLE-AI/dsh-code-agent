@@ -106,11 +106,14 @@ export function startupValues(parts: readonly string[], options: RawOptions): Tu
 
 export function apply(ctx: HarnessContext): void {
   const command = new Command()
-    .name('dsh --profile tui')
+    // A launcher that wraps this profile sets DSH_TUI_PROGRAM so that --help
+    // names the command the user actually typed. Left alone, the usage line
+    // still describes the plain upstream invocation.
+    .name(process.env['DSH_TUI_PROGRAM']?.trim() || 'dsh --profile tui')
     .description('Run coding tasks in the lightweight terminal UI.')
     .helpOption('-h, --help', 'show this help')
     .option('--alternate-screen', 'use the alternate screen buffer', false)
-    .option('--interactive', 'keep the session open for follow-up input', false)
+    .option('-i, --interactive', 'keep the session open for follow-up input', false)
     .option('--no-color', 'disable semantic terminal colors')
     .option('--resume [session]', 'resume a session by id, id prefix, or "latest"')
     .option('--permission <preset>', `session permission preset (${PRESETS.join(' | ')})`)

@@ -73,7 +73,12 @@ export function detectTerminal(
   const remote = truthy(env.SSH_CONNECTION) || truthy(env.SSH_TTY) || truthy(env.SSH_CLIENT)
   if (remote) notes.push('remote SSH session detected; editor launch uses the remote host environment')
 
-  const alternateScreen = interactive && term !== 'dumb' && term !== ''
+  // Windows sets no TERM at all — not in cmd, not in PowerShell, not in Windows
+  // Terminal — so an empty TERM there says nothing about the terminal, and
+  // reading it as "unknown, assume the worst" would disable the alternate
+  // screen on every Windows machine. Everywhere else an empty TERM really does
+  // mean the caller stripped it.
+  const alternateScreen = interactive && term !== 'dumb' && (term !== '' || platform === 'win32')
   if (interactive && !alternateScreen) {
     notes.push('TERM is unset or dumb; the alternate screen buffer is disabled')
   }

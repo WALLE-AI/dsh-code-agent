@@ -22,6 +22,11 @@ describe('shell completions', () => {
     for (const preset of TUI_PRESETS) expect(script, `${name} is missing ${preset}`).toContain(preset)
   })
 
+  // Both names reach the same profile, so completion has to cover both.
+  it.each(shells)('%s completes the dshcodecli command as well as dsh', (name) => {
+    expect(read(name)).toContain('dshcodecli')
+  })
+
   it('parses as valid bash', () => {
     expect(() => execFileSync('bash', ['-n', join(completions, 'dsh-tui.bash')])).not.toThrow()
   })
