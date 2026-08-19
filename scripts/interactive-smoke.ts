@@ -238,10 +238,22 @@ try {
       throw new Error(`TUI did not enter and restore the alternate screen\n${transcript.slice(-8000)}`)
     }
   }
-  // A terminal left reporting the wheel prints `[<64;…M` into the user's shell
-  // at every scroll, so the mode must be set and cleared on every run.
-  if (!transcript.includes('\u001B[?1006h') || !transcript.includes('\u001B[?1006l')) {
-    throw new Error(`TUI did not enable and restore mouse reporting\n${transcript.slice(-8000)}`)
+  // Wheel reporting is claimed only on the alternate screen, where the frame is
+  // the whole terminal and there is no scrollback for the wheel to reach. In the
+  // default profile settled rows are written into the terminal's own buffer, so
+  // taking the wheel would leave it doing nothing on consoles that never forward
+  // reports — `/mouse` claims it on demand instead.
+  const claimedMouse = transcript.includes('\u001B[?1006h')
+  if (wide && !claimedMouse) {
+    throw new Error(`TUI did not enable mouse reporting on the alternate screen\n${transcript.slice(-8000)}`)
+  }
+  if (!wide && claimedMouse) {
+    throw new Error(`TUI claimed the wheel outside the alternate screen\n${transcript.slice(-8000)}`)
+  }
+  // Whatever claimed it must also release it: a terminal left reporting the
+  // wheel prints `[<64;…M` into the user's shell at every scroll.
+  if (claimedMouse && !transcript.includes('\u001B[?1006l')) {
+    throw new Error(`TUI did not restore mouse reporting\n${transcript.slice(-8000)}`)
   }
   if (!followupEnterSent || !helpEnterSent || !quitEnterSent) {
     throw new Error(`TUI composer did not complete follow-up + /help + /quit\n${transcript.slice(-8000)}`)

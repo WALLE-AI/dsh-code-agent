@@ -27,8 +27,15 @@ export interface TranscriptEntry {
   readonly badge?: string
   readonly detail: readonly DetailLine[]
   readonly foldable: boolean
-  /** Fold policy before any user override. */
+  /** Fold policy before any user override, judged on line count alone. */
   readonly foldedByDefault: boolean
+  /**
+   * Terminal rows this entry's body may occupy before it folds regardless of
+   * how few logical lines it has. Only tool cards carry it: their body is
+   * evidence, which a reader dips into, while prose is the answer and is never
+   * folded for being long.
+   */
+  readonly foldAboveRows?: number
   readonly locations: readonly ToolCardLocation[]
   readonly status?: ToolNode['status']
   readonly diffStats?: { readonly added: number; readonly removed: number }
@@ -39,6 +46,15 @@ export interface TranscriptEntry {
    * cards set it, and only from the card kind the tool itself declared.
    */
   readonly statusTone?: RowTone
+  /**
+   * How many entries this one stands for, when it is a collapsed run.
+   *
+   * Absent on an ordinary entry. It is what lets the scrollback split tell a
+   * group apart from a card without reading its id: a group can still change
+   * after the entries before it have settled, and an entry that a later
+   * settlement could rewrite must not be handed to the terminal.
+   */
+  readonly collapsedFrom?: number
 }
 
 /** Reusable per-node entry cache so a live append does not rebuild every card. */
@@ -92,6 +108,17 @@ export interface TranscriptOptions extends ToolCardOptions {
  * because its rows are the answer, not a preview of it.
  */
 const FOLD_ABOVE: Readonly<Record<string, number>> = { diff: 8, default: 3 }
+
+/**
+ * Budget for a call that has not succeeded — still running, failed, or
+ * interrupted. Each earns more rows than a success: for a failure the output is
+ * the evidence for what went wrong, and for a running call it is the only sign
+ * of progress. It is still a budget. A command that fails after printing a
+ * thousand lines must not cost a thousand rows, which is exactly what an
+ * unbounded failure did: one `node -e` writing a JSON response to stderr buried
+ * every earlier turn on the screen.
+ */
+const UNSETTLED_FOLD_ABOVE = 8
 
 /**
  * Folding one row away costs a row to say so, so it is never worth it. A card
@@ -203,7 +230,9 @@ function toolEntry(
       : []),
   ]
   const foldAbove = options.foldDetailAbove
-    ?? FOLD_ABOVE[card.card] ?? FOLD_ABOVE.default ?? 3
+    ?? (node.status === 'succeeded'
+      ? FOLD_ABOVE[card.card] ?? FOLD_ABOVE.default ?? 3
+      : UNSETTLED_FOLD_ABOVE)
   const startedAtMs = node.status === 'pending' ? options.startedAt?.(node.callId) : undefined
   return {
     id: node.id,
@@ -214,7 +243,11 @@ function toolEntry(
     ...(card.badge === undefined ? {} : { badge: card.badge }),
     detail,
     foldable: detail.length > 0,
-    foldedByDefault: node.status === 'succeeded' && detail.length > foldAbove + FOLD_MARGIN,
+    // The line-count rule is the width-independent half of the policy; the row
+    // budget below catches the case it cannot see, where a handful of lines are
+    // each long enough to wrap across the whole screen.
+    foldedByDefault: detail.length > foldAbove + FOLD_MARGIN,
+    foldAboveRows: foldAbove,
     locations: card.locations,
     status: node.status,
     // The kind is read from the *declared* intent rather than from the built
@@ -271,10 +304,61 @@ export function buildTranscriptEntries(
   return entries
 }
 
-/** True when an entry renders collapsed given the user's fold overrides. */
-export function entryFolded(entry: TranscriptEntry, overrides: ReadonlySet<string>): boolean {
+/**
+ * Whether an entry's body would occupy more than `budget` terminal rows at this
+ * width, stopping as soon as the answer is known so a thousand-line body costs
+ * a handful of comparisons rather than a thousand.
+ *
+ * The per-line cost is the plain ceiling of the row's width, which is a *lower*
+ * bound on what wrapping actually produces: `wrapWords` breaks at word
+ * boundaries and the gutter narrows the continuations, so both push the real
+ * count up, never down. Under-counting is the safe direction — it folds only
+ * what is certainly too tall.
+ */
+function exceedsRows(entry: TranscriptEntry, columns: number, budget: number): boolean {
+  if (columns <= 0) return entry.detail.length > budget
+  let rows = 0
+  for (const line of entry.detail) {
+    rows += Math.max(1, Math.ceil(displayWidth(line.text) / columns))
+    if (rows > budget) return true
+  }
+  return false
+}
+
+/**
+ * The fold policy for an entry at a given width, before any user override.
+ *
+ * Counting logical lines is not enough on its own: one line of a 2,000-character
+ * JSON response is a single line by that measure and nineteen rows on screen, so
+ * a card that never reached the line threshold could still bury the rest of the
+ * conversation. The row budget is what the reader actually experiences.
+ *
+ * It applies to tool cards only. An assistant's long answer is the thing the
+ * user asked for; folding it for being long would hide the reply behind a
+ * keystroke.
+ */
+export function foldedByDefaultAt(entry: TranscriptEntry, columns: number): boolean {
   if (!entry.foldable) return false
-  return overrides.has(entry.id) ? !entry.foldedByDefault : entry.foldedByDefault
+  if (entry.foldedByDefault) return true
+  if (entry.nodeKind !== 'tool' || entry.foldAboveRows === undefined) return false
+  return exceedsRows(entry, columns, entry.foldAboveRows + FOLD_MARGIN)
+}
+
+/**
+ * True when an entry renders collapsed given the user's fold overrides.
+ * @param columns - render width; `0` means "unknown", which falls back to the
+ * width-independent line count.
+ */
+export function entryFolded(
+  entry: TranscriptEntry,
+  overrides: ReadonlySet<string>,
+  columns = 0,
+): boolean {
+  if (!entry.foldable) return false
+  // The override flips whatever the default is *at this width*, so ctrl+o on a
+  // card folded by the row budget opens it rather than folding it again.
+  const byDefault = foldedByDefaultAt(entry, columns)
+  return overrides.has(entry.id) ? !byDefault : byDefault
 }
 
 /** Prepend the row indent as a plain run so segments still sum to the text. */
@@ -296,7 +380,7 @@ export function transcriptLines(
   const all: TranscriptLine[] = []
   const live = new Set<string>()
   for (const entry of entries) {
-    const folded = entryFolded(entry, overrides)
+    const folded = entryFolded(entry, overrides, columns)
     const key = `${String(columns)}|${String(folded)}|${String(entry.startedAtMs ?? 0)}`
     live.add(entry.id)
     const cached = cache?.get(entry.id)

@@ -61,6 +61,14 @@ export const internals: {
 
 const DEFAULT_CANCEL_GRACE_MS = 5_000
 const DANGER_PRESET = 'danger-full-access'
+/**
+ * One key for every acknowledgement of a user action.
+ *
+ * The row shows the answer to the *most recent* thing the user did, so a second
+ * command replaces the first one's reply instead of queueing behind it — and a
+ * stale answer can never resurface after its question has been superseded.
+ */
+const ACTION_NOTICE = 'action'
 const CSI = `${String.fromCharCode(0x1b)}[`
 
 /**
@@ -84,7 +92,12 @@ class TerminalGuard {
     // Bracketed paste lets the composer tell a paste from typing, so multi-line
     // clipboard text lands in the draft instead of submitting line by line.
     this.output.write(`${CSI}?2004h`)
-    this.setMouse(true)
+    // The wheel stays the terminal's. Settled rows are written into its
+    // scrollback, so the terminal's own scrolling reaches the whole session —
+    // including on consoles that never forward wheel reports, where claiming
+    // them left the wheel doing nothing at all. `/mouse` takes them if the
+    // in-frame viewport is what you want to scroll instead.
+    this.setMouse(this.alternateScreen)
   }
 
   /**
@@ -337,7 +350,11 @@ async function run(ctx: HarnessContext, config: Config, exit: (code: number) => 
     },
     openLocation: (location) => {
       try {
-        store.setNotice(editor.open(location))
+        store.pushNotice({
+          key: ACTION_NOTICE,
+          text: editor.open(location),
+          priority: 'immediate',
+        })
       } catch (error) {
         store.setError(error instanceof Error ? error.message : String(error))
       }
@@ -353,7 +370,12 @@ async function run(ctx: HarnessContext, config: Config, exit: (code: number) => 
         store.setError(undefined)
         diagnostics.record('steer', {})
         controller.steer(text)
-        return store.setNotice('queued for the current step')
+        return store.pushNotice({
+          key: ACTION_NOTICE,
+          text: 'queued for the current step',
+          priority: 'immediate',
+          timeoutMs: 4_000,
+        })
       }
       submissions = submissions.then(async () => {
         store.setError(undefined)
@@ -362,16 +384,34 @@ async function run(ctx: HarnessContext, config: Config, exit: (code: number) => 
         if (line === '/quit') return void shutdown.request('quit')
         if (line === '/help') {
           const names = store.snapshot().commands.map(command => `/${command.name}`).join(', ')
-          return store.setNotice(`Commands: ${names}`)
+          // A reference list is read, not glanced at: it holds the row longer
+          // than an event would, and outranks whatever was already there.
+          return store.pushNotice({
+            key: ACTION_NOTICE,
+            text: `Commands: ${names}`,
+            priority: 'immediate',
+            timeoutMs: 20_000,
+          })
         }
-        if (line === '/sessions') return store.setNotice(await sessionsNotice(ctx))
+        if (line === '/sessions') {
+          return store.pushNotice({
+            key: ACTION_NOTICE,
+            text: await sessionsNotice(ctx),
+            priority: 'immediate',
+            timeoutMs: 20_000,
+          })
+        }
         if (line === '/mouse') {
           // Off hands the wheel back to the terminal — scrollback and drag-select
           // work as usual, and the transcript pages with PgUp/PgDn only.
           const on = guard.setMouse(!guard.mouseEnabled)
-          return store.setNotice(on
-            ? 'mouse wheel scrolls the transcript; hold Shift to select text'
-            : 'mouse wheel released to the terminal; PgUp/PgDn still page the transcript')
+          return store.pushNotice({
+            key: ACTION_NOTICE,
+            text: on
+              ? 'mouse wheel scrolls the live rows; hold Shift to select text'
+              : 'mouse wheel released to the terminal; it scrolls the whole session',
+            priority: 'immediate',
+          })
         }
         if (line === '/new') {
           pendingSwitch = { task: '' }
@@ -391,9 +431,15 @@ async function run(ctx: HarnessContext, config: Config, exit: (code: number) => 
         // Entering the unrestricted preset always takes a second, explicit step.
         if (line.startsWith('/permission') && line.includes(DANGER_PRESET) && dangerConfirmation !== line) {
           dangerConfirmation = line
-          return store.setNotice(
-            `${DANGER_PRESET} removes approval prompts; send the same command again to confirm`,
-          )
+          // The one notice that may not wait its turn: it gates a security
+          // decision the user is half-way through making.
+          return store.pushNotice({
+            key: ACTION_NOTICE,
+            text: `${DANGER_PRESET} removes approval prompts; send the same command again to confirm`,
+            tone: 'error',
+            priority: 'immediate',
+            timeoutMs: 15_000,
+          })
         }
         dangerConfirmation = undefined
         const result = await new AgentInputRouter(controller).submit(text)
@@ -427,8 +473,26 @@ async function run(ctx: HarnessContext, config: Config, exit: (code: number) => 
       // instead of a spinner that would only churn the screen.
       capabilities.unicode,
     )
-    if (capabilities.notes.length > 0) store.setNotice(capabilities.notes[0])
-    if (resumeSessionId !== undefined) store.setNotice(`resumed session ${resumeSessionId}`)
+    // What the session *is* comes first; what the terminal cannot do follows.
+    // Both are shown now — the capability note used to be written over by the
+    // resume line one statement later, and never reached the screen at all.
+    if (resumeSessionId !== undefined) {
+      store.pushNotice({
+        key: 'session',
+        text: `resumed session ${resumeSessionId}`,
+        priority: 'medium',
+      })
+    }
+    // Ambient: context about the terminal, not a reply to anything. Each note
+    // yields the row to whatever the user does next, and comes back after.
+    capabilities.notes.forEach((note, index) => {
+      store.pushNotice({
+        key: `capability:${String(index)}`,
+        text: note,
+        priority: 'low',
+        timeoutMs: 12_000,
+      })
+    })
     let request: HarnessRunRequest = {
       task: config.task,
       ...(resumeSessionId === undefined ? {} : { resumeSessionId }),
@@ -497,9 +561,13 @@ async function run(ctx: HarnessContext, config: Config, exit: (code: number) => 
       pendingSwitch = undefined
       if (next === undefined || shutdown.requested || taskCode !== 0) break
       request = { ...next, ...(config.model === undefined ? {} : { model: config.model }) }
-      store.setNotice(next.resumeSessionId === undefined
-        ? 'started a new session'
-        : `resumed session ${next.resumeSessionId}`)
+      store.pushNotice({
+        key: 'session',
+        text: next.resumeSessionId === undefined
+          ? 'started a new session'
+          : `resumed session ${next.resumeSessionId}`,
+        priority: 'medium',
+      })
     }
   } finally {
     process.off('SIGINT', onSignal)

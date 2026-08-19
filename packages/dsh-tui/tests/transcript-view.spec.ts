@@ -19,20 +19,77 @@ function tool(overrides: Partial<ToolNode>): ToolNode {
 const longOutput = Array.from({ length: 20 }, (_, index) => `row-${String(index)}`).join('\n')
 
 describe('transcript entries', () => {
-  it('folds long successful tools by default and keeps failures open', () => {
+  it('folds long tools by default, a failure only past its larger budget', () => {
+    const shortFailure = Array.from({ length: 6 }, (_, index) => `row-${String(index)}`).join('\n')
     const nodes: readonly TranscriptNode[] = [
       tool({ callId: 'ok', id: 'tool:ok', output: longOutput }),
       tool({ callId: 'bad', id: 'tool:bad', output: longOutput, status: 'failed' }),
+      tool({ callId: 'small', id: 'tool:small', output: shortFailure, status: 'failed' }),
     ]
     const entries = buildTranscriptEntries(nodes, generic)
     expect(entries[0]?.foldedByDefault).toBe(true)
-    expect(entries[1]?.foldedByDefault).toBe(false)
+    // A failure earns more rows than a success, but not unlimited ones: twenty
+    // lines of stderr used to render in full and bury the turns above it.
+    expect(entries[1]?.foldedByDefault).toBe(true)
     expect(entries[1]?.tone).toBe('error')
+    // Small enough to read at a glance, so it stays open — the evidence for a
+    // failure is worth the rows when there are few of them.
+    expect(entries[2]?.foldedByDefault).toBe(false)
 
     const folded = new Set<string>()
     expect(entryFolded(entries[0]!, folded)).toBe(true)
     folded.add('tool:ok')
     expect(entryFolded(entries[0]!, folded)).toBe(false)
+  })
+
+  it('folds a card whose few lines are wide enough to fill the screen', () => {
+    // The `node -e fetch(...)` card from the bug report: two logical lines, one
+    // of them a 2,000-character JSON response, which the line-count rule cannot
+    // see and which wraps across most of a terminal.
+    const blob = `status:200 ct:application/json\n${'x'.repeat(2_000)}`
+    const entries = buildTranscriptEntries([tool({ callId: 'j', id: 'tool:j', output: blob })], generic)
+    const entry = entries[0]!
+    // Unchanged by line count alone; the row budget is what catches it.
+    expect(entry.foldedByDefault).toBe(false)
+    expect(entryFolded(entry, new Set())).toBe(false)
+    expect(entryFolded(entry, new Set(), 140)).toBe(true)
+    expect(transcriptLines([entry], new Set(), 140)).toHaveLength(2)
+    // ctrl+o still opens it: the override flips the default that applies at
+    // this width, rather than the width-independent one.
+    expect(transcriptLines([entry], new Set(['tool:j']), 140).length).toBeGreaterThan(10)
+  })
+
+  it('keeps earlier turns on screen through a tool-heavy turn', () => {
+    // The reported session: a first exchange, then a turn that made eight calls
+    // — four searches, two shell probes, one failing `node -e` with a stack, and
+    // one printing a 2 KB JSON response as a single line. Unfolded those came to
+    // 66 rows, so on a 45-row terminal the opening question was gone.
+    const nodes: readonly TranscriptNode[] = [
+      { id: 'u0', kind: 'user', text: '你是谁', firstSeq: 0, lastSeq: 0 },
+      { id: 'a0', kind: 'assistant', text: '我是 DeepSeek 的 AI 助手。', firstSeq: 1, lastSeq: 1 },
+      { id: 'u1', kind: 'user', text: '查一下 trending', firstSeq: 2, lastSeq: 2 },
+      ...Array.from({ length: 6 }, (_, index) => tool({
+        callId: `c${String(index)}`, id: `tool:${String(index)}`,
+        output: Array.from({ length: 10 }, (_, row) => `source ${String(row)}`).join('\n'),
+      })),
+      tool({
+        callId: 'cf', id: 'tool:f', status: 'failed',
+        output: Array.from({ length: 40 }, (_, row) => `  at frame ${String(row)}`).join('\n'),
+      }),
+      tool({ callId: 'cj', id: 'tool:j', output: `status:200\n${'x'.repeat(2_000)}` }),
+    ]
+    const rows = transcriptLines(buildTranscriptEntries(nodes, generic), new Set(), 140)
+    // Two rows per folded card, and the opening exchange still on a 45-row screen.
+    expect(rows.filter(row => row.entryId.startsWith('tool:'))).toHaveLength(16)
+    expect(rows.slice(-45).map(row => row.entryId)).toContain('u0')
+  })
+
+  it('never folds an assistant answer for being long', () => {
+    const text = Array.from({ length: 40 }, (_, index) => `paragraph ${String(index)}`).join('\n')
+    const entries = buildTranscriptEntries([
+      { id: 'a1', kind: 'assistant', text, firstSeq: 1, lastSeq: 1 },
+    ], generic)
+    expect(entryFolded(entries[0]!, new Set(), 80)).toBe(false)
   })
 
   it('renders assistant markdown without shifting a line', () => {

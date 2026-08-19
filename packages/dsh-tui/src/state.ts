@@ -20,6 +20,12 @@ import {
   type TranscriptLineCache, type TranscriptOptions,
 } from './transcript-view.ts'
 import type { DetailLine } from './styling.ts'
+import { collapseEntries, DEFAULT_COLLAPSE_RULES, type CollapseRule } from './collapse.ts'
+import {
+  clearNotices, dropNotice as dropNoticeFrom, emptyNoticeQueue,
+  pushNotice as pushNoticeInto, textNotice, tickNotices as tickNoticesIn,
+  type Notice, type NoticeQueue,
+} from './notifications.ts'
 
 type Listener = () => void
 
@@ -56,6 +62,7 @@ export class TuiStore {
   private readonly rows: TranscriptLineCache = new Map()
   private readonly folds = new Set<string>()
   private present: (node: ToolNode) => ToolPresentation = genericPresentation
+  private notices: NoticeQueue = emptyNoticeQueue
   private value: TuiSnapshot = {
     status: 'starting',
     interactive: false,
@@ -73,6 +80,7 @@ export class TuiStore {
     workspace: {},
     turn: { index: 0, startedAtMs: 0 },
     hasMoreHistory: false,
+    noticesQueued: 0,
   }
 
   /** Nodes currently rendered; grows one page at a time via {@link expandWindow}. */
@@ -106,6 +114,8 @@ export class TuiStore {
     transcript: TranscriptOptions = {},
     private readonly retainedNodes = maxEvents * 20,
     private readonly clock: () => number = Date.now,
+    /** Pass an empty list to render every card on its own, as before. */
+    private readonly collapseRules: readonly CollapseRule[] = DEFAULT_COLLAPSE_RULES,
   ) {
     this.window = maxEvents
     this.projection = new ConversationProjection(Math.max(maxEvents, retainedNodes))
@@ -261,13 +271,18 @@ export class TuiStore {
   private publishProjection(bumpRevision = true): ProjectionIssue | undefined {
     const projected = this.projection.snapshot()
     const nodes = projected.nodes.slice(-this.window)
-    const entries = buildTranscriptEntries(nodes, this.present, this.transcript, this.cache)
+    const built = buildTranscriptEntries(nodes, this.present, this.transcript, this.cache)
+    // Runs of settled read and search cards become one entry, so a turn that
+    // looked at nine files does not spend forty rows saying so.
+    const entries = collapseEntries(built, this.collapseRules, this.transcript.glyphs)
     const next: TuiSnapshot = {
       ...this.value,
       nodes,
       entries,
       lines: this.renderLines(entries),
-      counters: countersOf(entries),
+      // Counted on what actually ran, not on what is shown: collapsing is a
+      // display decision and must not change the tool tally in the status row.
+      counters: countersOf(built),
       hasMoreHistory: projected.nodes.length > nodes.length,
       transcriptRevision: this.value.transcriptRevision + (bumpRevision ? 1 : 0),
     }
@@ -298,10 +313,58 @@ export class TuiStore {
     this.publish(next)
   }
 
+  /**
+   * Show a plain string, or clear the row and everything waiting for it.
+   *
+   * The ad-hoc call sites still send bare text; {@link pushNotice} is the form
+   * that can say how long, how loudly, and what it retracts.
+   */
   setNotice(notice: string | undefined): void {
+    if (notice === undefined) {
+      this.notices = clearNotices()
+      this.publishNotices()
+      return
+    }
+    this.pushNotice(textNotice(notice))
+  }
+
+  /** Queue a notice with its own priority, timeout and retractions. */
+  pushNotice(notice: Notice): void {
+    this.notices = pushNoticeInto(this.notices, notice, this.clock())
+    this.publishNotices()
+  }
+
+  /** Drop one notice by key, wherever it is. */
+  dropNotice(key: string): void {
+    this.notices = dropNoticeFrom(this.notices, key, this.clock())
+    this.publishNotices()
+  }
+
+  /**
+   * Retire the showing notice once its time is up, and promote the next.
+   *
+   * Nothing here schedules: the view calls this while there is something to
+   * expire, so an idle session holds no timer.
+   */
+  tickNotices(): void {
+    const next = tickNoticesIn(this.notices, this.clock())
+    if (next === this.notices) return
+    this.notices = next
+    this.publishNotices()
+  }
+
+  private publishNotices(): void {
     const next = { ...this.value }
-    if (notice === undefined) delete next.notice
-    else next.notice = notice
+    const current = this.notices.current
+    if (current === undefined) {
+      delete next.notice
+      delete next.noticeTone
+    } else {
+      next.notice = current.text
+      if (current.tone === undefined) delete next.noticeTone
+      else next.noticeTone = current.tone
+    }
+    next.noticesQueued = this.notices.queue.length
     this.publish(next)
   }
 

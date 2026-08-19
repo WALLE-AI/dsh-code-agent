@@ -154,7 +154,10 @@ export function helpRows(
   bindings: readonly { keys: string; surface: string; description: string }[],
   keyColumn = 18,
 ): readonly OverlayRow[] {
-  const order = ['global', 'composer', 'transcript', 'approval', 'question', 'palette', 'picker']
+  const order = [
+    'global', 'composer', 'transcript',
+    'approval', 'approval-feedback', 'question', 'palette', 'browser', 'picker',
+  ]
   const rows: OverlayRow[] = []
   for (const surface of order) {
     const group = bindings.filter(binding => binding.surface === surface)

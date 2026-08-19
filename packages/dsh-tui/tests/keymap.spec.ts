@@ -14,6 +14,7 @@ const NO_KEY: InkKeyLike = Object.freeze({
 
 const OPEN: KeyContext = {
   interactive: true, cancelArmed: false, questionHasOptions: false,
+  approvalOptionCount: 4,
   draftEmpty: true, canMoveUp: false, canMoveDown: false,
   completionOpen: false, completionExact: false,
 }
@@ -23,7 +24,7 @@ function press(overrides: Partial<KeyEvent> = {}): KeyEvent {
 }
 
 const SURFACES: readonly UiSurface[] = [
-  'approval', 'question', 'palette', 'help', 'browser',
+  'approval', 'approval-feedback', 'question', 'palette', 'help', 'browser',
   'transcript', 'composer',
 ]
 
@@ -88,21 +89,28 @@ describe('session browser surface', () => {
 })
 
 describe('approval surface', () => {
-  it('answers directly on y/n or their indices', () => {
-    for (const key of [press({ input: 'Y' }), press({ input: '1' })]) {
-      expect(resolveKey('approval', key, OPEN)).toEqual({ kind: 'approval-decide', allowed: true })
-    }
-    for (const key of [press({ input: 'N' }), press({ input: '2' })]) {
-      expect(resolveKey('approval', key, OPEN)).toEqual({ kind: 'approval-decide', allowed: false })
-    }
+  it('keeps y and n meaning allow-now and reject-now, whatever the list holds', () => {
+    expect(resolveKey('approval', press({ input: 'Y' }), OPEN))
+      .toEqual({ kind: 'approval-shortcut', allowed: true })
+    expect(resolveKey('approval', press({ input: 'N' }), OPEN))
+      .toEqual({ kind: 'approval-shortcut', allowed: false })
+  })
+
+  it('addresses the list by position on a digit', () => {
+    expect(resolveKey('approval', press({ input: '1' }), OPEN))
+      .toEqual({ kind: 'approval-select', index: 0 })
+    expect(resolveKey('approval', press({ input: '4' }), OPEN))
+      .toEqual({ kind: 'approval-select', index: 3 })
+    // A digit past the end of the list answers nothing at all.
+    expect(resolveKey('approval', press({ input: '5' }), OPEN)).toBeUndefined()
   })
 
   it('fails closed on Esc', () => {
     expect(resolveKey('approval', press({ name: 'escape' }), OPEN))
-      .toEqual({ kind: 'approval-decide', allowed: false })
+      .toEqual({ kind: 'approval-shortcut', allowed: false })
   })
 
-  it('moves between the two answers', () => {
+  it('moves between the answers', () => {
     expect(resolveKey('approval', press({ name: 'up' }), OPEN))
       .toEqual({ kind: 'approval-move', delta: -1 })
     expect(resolveKey('approval', press({ name: 'down' }), OPEN))
@@ -118,6 +126,32 @@ describe('approval surface', () => {
       expect(resolveKey('approval', press({ name: 'return', ...modifier }), OPEN))
         .toBeUndefined()
     }
+  })
+})
+
+describe('approval feedback surface', () => {
+  it('takes the typed reason', () => {
+    expect(resolveKey('approval-feedback', press({ input: 'a' }), OPEN))
+      .toEqual({ kind: 'approval-feedback-type', text: 'a' })
+    // A digit is text here, not an answer index: the list is not showing.
+    expect(resolveKey('approval-feedback', press({ input: '2' }), OPEN))
+      .toEqual({ kind: 'approval-feedback-type', text: '2' })
+    expect(resolveKey('approval-feedback', press({ name: 'backspace' }), OPEN))
+      .toEqual({ kind: 'approval-feedback-backspace' })
+  })
+
+  it('peels one layer on Esc rather than answering', () => {
+    // The fail-closed Esc is the one on the list. Opening the field by mistake
+    // must be undoable without having decided anything.
+    expect(resolveKey('approval-feedback', press({ name: 'escape' }), OPEN))
+      .toEqual({ kind: 'approval-feedback-cancel' })
+  })
+
+  it('submits only on a bare Enter', () => {
+    expect(resolveKey('approval-feedback', press({ name: 'return' }), OPEN))
+      .toEqual({ kind: 'approval-feedback-submit' })
+    expect(resolveKey('approval-feedback', press({ name: 'return', ctrl: true }), OPEN))
+      .toBeUndefined()
   })
 })
 

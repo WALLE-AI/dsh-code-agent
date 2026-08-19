@@ -46,7 +46,7 @@
 | 阅读 | 流式回答、**真正的 markdown 渲染**（标题/粗斜体/删除线/链接/列表/引用/分隔线/对齐表格/代码围栏）、按行折行（CJK 逐字断行）、resize 全量重排 |
 | 工具 | 语义化工具卡片（run/edit/search/read/fetch 着色）、diff 逐行着色、长输出自动折叠、Code Mode 子调用缩进、`⚠ interrupted` 未完成调用 |
 | 交互 | 审批瀑布（`y`/`n`）、结构化提问表单、命令补全 `/`、路径补全 `@`、命令面板 `Ctrl+P`、会话浏览器 `Ctrl+R`、草稿历史、steering（运行中发消息直接改向当前 run） |
-| 终端 | 能力探测（truecolor / ANSI / 无色、Unicode / ASCII 退化）、alternate screen、**差分帧绘制**（不整屏擦除，无闪烁）、鼠标滚轮翻页、tmux/SSH 探测与降级 |
+| 终端 | 能力探测（truecolor / ANSI / 无色、Unicode / ASCII 退化）、alternate screen、**差分帧绘制**（不整屏擦除，无闪烁）、定稿行写入终端原生 scrollback、tmux/SSH 探测与降级 |
 | 工程 | 严格 TypeScript 6、`fast-check` 属性测试、PTY 真机冒烟矩阵、性能与内存预算、上游契约漂移门禁、打包产物离树安装验证 |
 
 ---
@@ -282,7 +282,7 @@ pnpm run package:sea
 |---|---|
 | `Enter` / `Ctrl+Enter` | 发送 / 换行 |
 | `Esc` | 先清草稿；无可清时两段式取消当前运行 |
-| `PgUp` / `PgDn` / 鼠标滚轮 | 滚动 transcript（向上滚会暂停跟随并显示未读数） |
+| `PgUp` / `PgDn` | 滚动实时区域（向上滚会暂停跟随并显示未读数）；已定稿的历史用终端自己的滚轮 / `Shift+PgUp` |
 | `Tab` | 接受补全，否则在 composer 与 transcript 之间切换焦点 |
 | `/` `@` `?` | 命令补全 / 路径补全 / 快捷键速查表 |
 | `Ctrl+P` / `Ctrl+R` | 命令面板 / 会话浏览器 |
@@ -360,8 +360,12 @@ sequenceDiagram
 - **投影是幂等的**：事件按 `seq` 单调闸门通过，重复投递按结构指纹去重；出现 gap、冲突或
   未知的 required 事件时，transcript **暂停并给出诊断**，而不是显示半截历史。
 - **渲染是差分的**：`frame-writer.ts` 截获 Ink 的写出，逐行比对上一帧，只重写真正变化的行，
-  不做整屏 `ESC[2K` 擦除——这是「spinner 跑起来就闪屏」的根因修复。也因此终端自身的
-  scrollback 里永远没有会话内容，滚轮必须走应用内视口（`viewport.ts`）。
+  不做整屏 `ESC[2K` 擦除——这是「spinner 跑起来就闪屏」的根因修复。
+- **已定稿的行交给终端**：不再变化的条目通过 Ink `<Static>` 一次性写进终端真正的
+  scrollback（`scrollback.ts`），只有还在动的行留在重绘帧里。滚轮、滚动条、`Shift+PgUp`、
+  拖选因此全部回归终端原生行为，在**任何**终端上都能翻到整场会话（含 banner），不需要鼠标
+  上报模式。代价：已进入 scrollback 的行归终端所有，改窗口大小不会重排，也不能再用
+  `Ctrl+O` 折叠——这两点在实时区域依然成立。
 
 ### 3.3 边界规则（由测试强制）
 
@@ -409,7 +413,8 @@ dsh-code-agent/
 | `terminal-text.ts` / `terminal-capabilities.ts` / `terminal-layout.ts` | 终端安全（escape/控制符清洗）、能力探测、行预算与折行 |
 | `keymap.ts` / `input-router.ts` / `composer.ts` / `draft-completion.ts` | 按键语义化、输入路由、草稿编辑与 `/`、`@` 补全 |
 | `approval-queue.ts` / `question-queue.ts` / `question-form.ts` | 审批与结构化提问的排队、渲染与失败关闭（`unavailable` 视为拒绝） |
-| `viewport.ts` / `mouse.ts` | 应用内视口滚动与 SGR 鼠标滚轮解析 |
+| `scrollback.ts` | 判定哪些条目可以交给终端 scrollback（settled 前缀，遇 pending 即止） |
+| `viewport.ts` / `mouse.ts` | 实时区域的视口滚动与 SGR 鼠标滚轮解析 |
 | `frame-writer.ts` | 差分帧绘制，消除整屏擦除引起的闪烁 |
 | `activity.ts` / `status-line.ts` / `todo-panel.ts` / `working-line.ts` | 状态行、上下文压力条、goal/todo 面板、运行中提示 |
 | `session-selector.ts` / `session-browser.ts` / `history-store.ts` | 恢复候选解析、全屏会话浏览器、跨会话草稿历史 |
@@ -509,7 +514,8 @@ pnpm run build:lib           # 生成发布用 lib/
 
 - `Ctrl+X` 以 detached 进程打开编辑器，适合 GUI/远程编辑器；需要接管 TTY 的终端编辑器不在范围内。
 - `Home` / `End` 未绑定（Ink 5 会把它们解析成一个随后被清空的键名），由 `Ctrl+A` / `Ctrl+E` 承担。
-- 鼠标只接管滚轮；接管期间原生拖选需要按住 `Shift`，`/mouse` 可把滚轮交还终端。
+- 默认不接管鼠标：滚轮属于终端。`/mouse` 可让应用接管滚轮以滚动实时区域（接管期间原生
+  拖选需按住 `Shift`）；`--alternate-screen` 整体回到旧的「应用独占屏幕」模型。
 - 暂无图像协议、PTY 面板、右侧 activity 面板与会话全文搜索。
 - 内置 profile 注册需上游 `PROFILE_TEMPLATES` 配合；本仓库按 ADR 0001 只用外置 bundle。
 

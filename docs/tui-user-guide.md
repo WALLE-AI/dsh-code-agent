@@ -95,7 +95,7 @@ cp packages/dsh-tui/completions/dsh-tui.fish ~/.config/fish/completions/dsh.fish
 | `Ctrl+U` / `Ctrl+K` | Delete to the start or end of the line. |
 | `Esc` | Clears a non-empty draft first. With nothing to clear, the first press arms cancellation and the second cancels the current run. |
 | `Ctrl+C` | Two-step cancellation, then a bounded shutdown. |
-| `PgUp` / `PgDn` | Scroll the transcript. Scrolling up pauses following and shows an unread count; at the oldest row `PgUp` pages more retained history in. |
+| `PgUp` / `PgDn` | Scroll the live rows. Scrolling up pauses following and shows an unread count. Settled rows are in the terminal's own buffer — use the wheel or `Shift+PgUp` for those. |
 | `Tab` | Accept the open completion; otherwise move focus between the composer and the transcript. In transcript focus, `j`/`k` or `↑`/`↓` scroll and `Enter` returns to the composer. |
 | `/` | At the start of the draft, completes a command name. `Tab` or `Enter` accepts, `↑`/`↓` selects, `Esc` dismisses. |
 | `@` | Anywhere in the draft, completes a workspace path. A directory keeps the caret inside it so you can keep typing. |
@@ -103,19 +103,31 @@ cp packages/dsh-tui/completions/dsh-tui.fish ~/.config/fish/completions/dsh.fish
 | `Shift+Tab` | Cycle the permission mode through the presets the session offers. |
 | `Ctrl+P` | Command palette: type to filter, `↑`/`↓` to select, `Enter` to prefill the draft, `Esc` to close. |
 | `Ctrl+R` | Open the session browser, a full screen. Type to filter — the list *is* the search result, there is no mode to enter. `↑`/`↓` and `PgUp`/`PgDn` move the cursor, `Enter` resumes, `Esc` clears the filter and then closes. The cursor follows the session rather than the row number, so filtering cannot silently move it onto a different one. Wide terminals show a preview beside the list. |
-| `Ctrl+O` | Fold or unfold the tool card you are looking at. |
+| `Ctrl+O` | Fold or unfold the tool card you are looking at, including a collapsed run of look-ups. |
 | `Ctrl+X` | Open that card's first file location in `$EDITOR`. |
 | `↑` / `↓` | Move between lines of a multi-line draft, then walk the draft history. Inside a question, moves the option selection. |
 | `1`–`9`, `Space` | Pick a question option; `Space` toggles in multi-select. |
+| `y` / `n` | In an approval, allow once or reject outright. `1`–`9` answer by position, including the rows that ask for a reason. |
 
-The mouse wheel scrolls the transcript, the same viewport `PgUp`/`PgDn` move —
-rolling far enough up reaches the startup banner. It has to: the frame is
-repainted in place, so the terminal's own scrollback never receives a row of the
-session and scrolling it would only show whatever the shell printed before
-launch. Because the wheel is claimed, native drag-select needs `Shift` (most
-terminals pass a shifted drag straight through). `/mouse` hands the wheel back to
-the terminal if you would rather select and scroll natively; `PgUp`/`PgDn` keep
-working either way, and a terminal with no `TERM` set never gets asked to report.
+### Scrolling: the terminal's, not the app's
+
+**The mouse wheel is your terminal's.** A row that can no longer change is written
+into the terminal's real scroll buffer and never touched again, so the wheel, the
+scrollbar and `Shift+PgUp` reach the whole session — the banner included — exactly
+the way they reach any other command's output. Drag-select works natively too,
+with no `Shift` needed, and the session is still there after the TUI exits.
+
+Only rows that are still moving stay in the repainted frame: the newest entry,
+any call still running, and everything after it. Those are what `PgUp`/`PgDn` and
+`Tab`+`j`/`k` page through, and what `Ctrl+O` folds — a card that has scrolled
+into the terminal's buffer belongs to the terminal, so it cannot be re-folded or
+re-wrapped on resize. That is the trade for scrolling that works everywhere,
+including consoles that never forward wheel reports to the program at all.
+
+`/mouse` claims the wheel for the live frame instead, if that is what you want to
+scroll. `--alternate-screen` restores the old behaviour wholesale: the app takes
+the screen, nothing reaches the scroll buffer, and the wheel is claimed for the
+in-app viewport.
 
 `Home` and `End` are not bound: Ink 5 resolves both to a key name it then blanks
 out, so the TUI never sees them. `Ctrl+A` and `Ctrl+E` carry that duty. For the
@@ -135,8 +147,9 @@ new turn.
 ## 4. Reading the screen
 
 - A framed banner opens a fresh session with the directory, the branch, the
-  model when the run was given one, and a line of tips. It scrolls away with the
-  history rather than holding rows. On a colour terminal at least 40 columns
+  model when the run was given one, and a line of tips. It is written into the
+  terminal's scroll buffer, so it stays reachable for the whole session rather
+  than holding rows on screen. On a colour terminal at least 40 columns
   wide it is led by the DeepSeek whale and a `deepseek` wordmark; with
   `NO_COLOR`, `--no-color`, `TERM=dumb` or a narrower window the art is dropped
   and the banner starts at the frame.
@@ -155,11 +168,34 @@ new turn.
 - `• text` — a durable marker (compaction, approval audit).
 - `── turn …` — the end of one turn and its reason.
 
-Long successful tool output folds automatically — above three body rows, or
-eight for a diff, whose rows are the answer rather than a preview of it. A card
-never folds to hide a single row, because saying so would cost that row back.
-Failures stay open with their tail visible. Output beyond the inline budget is reported as
+Long tool output folds automatically. A successful card shows three body rows,
+or eight for a diff, whose rows are the answer rather than a preview of it. A
+call that has not succeeded — failed, interrupted, or still running — gets eight:
+enough to read the error or watch progress, and still bounded, so a command that
+dies after printing forty frames of stack does not cost forty rows. A card never
+folds to hide a single row, because saying so would cost that row back.
+
+The budget is counted in **terminal rows, not lines**, so a card is folded by
+what it would actually occupy at your width. This is what stops a single line of
+JSON — one line by any count, twenty rows on screen — from pushing the rest of
+the session out of view. `Ctrl+O` opens any card in full. An assistant's answer
+is never folded for being long: prose is the reply, not evidence.
+
+Output beyond the inline budget is reported as
 `… N more line(s) not shown (output capped)` rather than silently dropped.
+
+A **run of successful look-ups collapses into one card**. Three or more
+consecutive reads and searches that all succeeded become a single row —
+`✓ 8 reads · 2 searches` — whose body lists what was touched; `Ctrl+O` opens it
+like any other card. This is what stops a turn that greps once and reads eight
+files from spending forty rows saying so and pushing the answer off the screen.
+
+Only reads and searches collapse, because *which* files were looked at matters
+more than their contents. A command's output, a diff and a fetched page are
+never hidden, nor is a call that failed, was interrupted, or is still running —
+and the kind is taken from the card the tool declared, never from its name, so a
+tool this profile has not seen is left exactly as it was. The tool count in the
+status row keeps counting what ran, not what is shown.
 
 Rows wrap at word boundaries rather than being cut at the terminal edge; a token
 wider than the row is broken, and CJK text breaks between characters. A resize
@@ -194,6 +230,13 @@ reports a context window.
 While the Agent is working, a line above the composer says so: a turning frame,
 a verb, how long the turn has been going, and — once the wait passes thirty
 seconds, when it starts to matter — the output token count.
+
+Notices — `resumed session …`, `/mouse` toggles, terminal-capability warnings —
+share one row and take turns on it. Each holds the row for its own timeout and
+then yields; an answer to something you just did takes the row immediately and
+gives it back to whatever it displaced. When more are waiting the row says so
+with a trailing `+2`. Nothing is silently overwritten, and nothing stays for
+ever.
 
 The status row carries three fields: the activity segments on the left (the
 model route the Harness resolved, the permission preset, plan/todo state, context percentage, tool count, file churn,
@@ -230,15 +273,41 @@ only prints the warning.
 
 Approval prompts show the tool, the active preset, the first rows of the call's
 own card — the command or the diff you are being asked about — and the reason.
-Answer with `y`/`1` to allow once or `n`/`2` to reject; `↑`/`↓` move between the
-two and `Enter` confirms the highlighted one. `Enter` only counts without a
-modifier held, so a stray `Ctrl+Enter` cannot answer for you. `Esc` rejects.
-On a short terminal the preview is trimmed a row at a time, and the tool name
-and both answers are the last things to go — you can always see what you are
-answering and how to answer it.
-There is no "allow everything" key. If the terminal cannot
-answer — teardown, abort, a crashed renderer — the request is answered
-`unavailable`, which the Harness treats as a refusal.
+
+The answers are:
+
+| Row | What it does |
+|---|---|
+| `1` `allow once` | Grants this call and nothing else. |
+| `2` `reject` | Refuses this call. |
+| `3` `reject, and say why` | Refuses it and opens one line; what you type is sent as your next message, so the retry is informed rather than identical. |
+| `4` `allow once, then switch to <preset>` | Grants this call, then sends the same `/permission` command `Shift+Tab` would. Shown only when there is a preset to advance to; switching **to** `danger-full-access` still needs its second confirmation. |
+
+The order is deliberate: `1` and `2` mean what they have always meant, and `↑`
+from the armed default still lands on `allow once`. The row that changes the
+session's permission preset is last, so it is reached on purpose rather than by
+muscle memory.
+
+`y` allows once and `n` rejects outright — neither ever lands on a row that
+would then ask you for something. `1`–`9` answer by position, `↑`/`↓` move and
+`Enter` confirms the highlighted row. `Enter` only counts without a modifier
+held, so a stray `Ctrl+Enter` cannot answer for you.
+
+`Esc` on the list rejects, failing closed. `Esc` inside the reason field only
+closes the field — the prompt is still open and nothing has been decided, so
+opening it by mistake costs you one keystroke rather than a refusal.
+
+Rejection is armed by default, and it is armed on a row that settles on its own:
+an approval answered by accident fails closed and does not leave a text field
+waiting. On a short terminal the preview is trimmed a row at a time and the two
+wider answers are dropped, leaving `allow once` and `reject` — you can always
+see what you are answering and how to answer it.
+
+There is no "allow everything" key, and no answer here writes a permission rule:
+the Harness's outcomes are one-shot by construction, and session-wide permission
+is the preset, which is why the wider row names the preset it switches to. If the
+terminal cannot answer — teardown, abort, a crashed renderer — the request is
+answered `unavailable`, which the Harness treats as a refusal.
 
 ## 6. Sessions
 

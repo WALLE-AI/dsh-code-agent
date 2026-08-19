@@ -1,9 +1,9 @@
 /**
- * One row per entry of `APPROVAL_CHOICES` in `app.tsx`. `ApprovalDecision` is a
- * closed set, so this does not vary at runtime; the approval regression test in
- * `app-view.spec.tsx` fails if the two ever disagree.
+ * One row per answer, when the caller does not say how many. Two is the floor:
+ * `allow once` and `reject` are always offered, whatever else `approval-options`
+ * adds on a terminal with room for it.
  */
-const APPROVAL_CHOICE_ROWS = 2
+const DEFAULT_APPROVAL_CHOICE_ROWS = 2
 
 export interface TerminalLayoutInput {
   rows: number
@@ -15,6 +15,10 @@ export interface TerminalLayoutInput {
    * whatever the budget leaves.
    */
   approvalPreviewRows?: number
+  /** One row per answer the panel is showing; the answers are never dropped. */
+  approvalChoiceRows?: number
+  /** The rejection-reason field is open, and owns a row of its own. */
+  approvalFeedback?: boolean
   question?: {
     detail: boolean
     optionCount: number
@@ -117,7 +121,9 @@ export function terminalLayout(input: TerminalLayoutInput): TerminalLayout {
       // A separating blank row, the `Approve <tool>?` title, the preview, and
       // one row per answer. Title and answers are not optional: they name the
       // tool and *are* the interaction.
-      total += Number(showApprovalMargin) + 1 + APPROVAL_CHOICE_ROWS + approvalPreviewRows
+      total += Number(showApprovalMargin) + 1 + approvalPreviewRows
+        + Math.max(1, input.approvalChoiceRows ?? DEFAULT_APPROVAL_CHOICE_ROWS)
+        + Number(input.approvalFeedback === true)
     } else if (input.question !== undefined) {
       total += 3 + Number(showQuestionDetail)
         + Math.min(input.question.optionCount, policy.optionWindowSize)

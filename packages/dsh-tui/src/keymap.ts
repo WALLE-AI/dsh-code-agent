@@ -28,7 +28,7 @@ export interface KeyEvent {
  * caller decides which, mirroring the modal precedence of the frame itself.
  */
 export type UiSurface =
-  | 'approval' | 'question' | 'palette' | 'help' | 'browser'
+  | 'approval' | 'approval-feedback' | 'question' | 'palette' | 'help' | 'browser'
   | 'transcript' | 'composer'
 
 export type UiAction =
@@ -36,9 +36,17 @@ export type UiAction =
   | { readonly kind: 'cancel-arm' }
   | { readonly kind: 'cancel' }
   // Approval
-  | { readonly kind: 'approval-decide'; readonly allowed: boolean }
+  /** Answer with the first row of this outcome that settles on its own. */
+  | { readonly kind: 'approval-shortcut'; readonly allowed: boolean }
+  /** Answer with the row at this index, whatever it asks for next. */
+  | { readonly kind: 'approval-select'; readonly index: number }
   | { readonly kind: 'approval-move'; readonly delta: -1 | 1 }
   | { readonly kind: 'approval-confirm' }
+  // Approval, while a rejection reason is being typed
+  | { readonly kind: 'approval-feedback-type'; readonly text: string }
+  | { readonly kind: 'approval-feedback-backspace' }
+  | { readonly kind: 'approval-feedback-submit' }
+  | { readonly kind: 'approval-feedback-cancel' }
   // Question form
   | { readonly kind: 'question-move'; readonly delta: -1 | 1 }
   | { readonly kind: 'question-backspace' }
@@ -90,6 +98,8 @@ export interface KeyContext {
   readonly cancelArmed: boolean
   /** The focused question exposes selectable options. */
   readonly questionHasOptions: boolean
+  /** How many answers the approval panel is showing. */
+  readonly approvalOptionCount: number
   /** The draft is empty, so Esc has nothing to clear. */
   readonly draftEmpty: boolean
   /** The caret has a draft line above it, so `↑` is a motion and not history. */
@@ -140,7 +150,8 @@ export function resolveKey(
   if (ctrl(key, 'c')) return context.cancelArmed ? { kind: 'cancel' } : { kind: 'cancel-arm' }
 
   switch (surface) {
-    case 'approval': return approvalKey(key)
+    case 'approval': return approvalKey(key, context)
+    case 'approval-feedback': return approvalFeedbackKey(key)
     case 'question': return questionKey(key, context)
     case 'palette': return paletteKey(key)
     // Any key dismisses the help sheet; it is a reference card, not a mode.
@@ -150,21 +161,44 @@ export function resolveKey(
   }
 }
 
-function approvalKey(key: KeyEvent): UiAction | undefined {
-  // The single-key answers stay: they are the fastest path and the documented one.
-  if (key.input.toLowerCase() === 'y' || key.input === '1') {
-    return { kind: 'approval-decide', allowed: true }
-  }
-  if (key.input.toLowerCase() === 'n' || key.input === '2') {
-    return { kind: 'approval-decide', allowed: false }
+function approvalKey(key: KeyEvent, context: KeyContext): UiAction | undefined {
+  // The letter answers stay, and stay meaning what they always meant: `y`
+  // allows once and `n` rejects now, whatever else the list has grown. Neither
+  // ever lands on a row that would then ask for something.
+  if (key.input.toLowerCase() === 'y') return { kind: 'approval-shortcut', allowed: true }
+  if (key.input.toLowerCase() === 'n') return { kind: 'approval-shortcut', allowed: false }
+  // Digits address the list by position, so the row a user reads as `3` is the
+  // row `3` answers with — including the ones that ask for a reason.
+  const digit = /^[1-9]$/.test(key.input) ? Number(key.input) - 1 : undefined
+  if (digit !== undefined) {
+    return digit < context.approvalOptionCount
+      ? { kind: 'approval-select', index: digit }
+      : undefined
   }
   // Esc fails closed, which is what the queue does when it cannot ask at all.
-  if (key.name === 'escape') return { kind: 'approval-decide', allowed: false }
+  if (key.name === 'escape') return { kind: 'approval-shortcut', allowed: false }
   if (key.name === 'up') return { kind: 'approval-move', delta: -1 }
   if (key.name === 'down') return { kind: 'approval-move', delta: 1 }
   // Only a bare Enter confirms: a modifier held over from the previous keystroke
   // must not be able to answer a prompt that gates a tool run.
   if (isPlainReturn(key)) return { kind: 'approval-confirm' }
+  return undefined
+}
+
+/**
+ * Typing the reason a call was refused.
+ *
+ * Esc peels one layer here rather than answering: the prompt is still open, and
+ * a user who opened the field by mistake must be able to get back to the list
+ * without having answered anything. The fail-closed Esc is the one on the list.
+ */
+function approvalFeedbackKey(key: KeyEvent): UiAction | undefined {
+  if (key.name === 'escape') return { kind: 'approval-feedback-cancel' }
+  if (key.name === 'backspace' || key.name === 'delete') {
+    return { kind: 'approval-feedback-backspace' }
+  }
+  if (isPlainReturn(key)) return { kind: 'approval-feedback-submit' }
+  if (isPrintable(key)) return { kind: 'approval-feedback-type', text: key.input }
   return undefined
 }
 
@@ -370,9 +404,12 @@ export const KEY_BINDINGS: readonly KeyBindingDoc[] = Object.freeze([
   { keys: 'Enter / Esc', surface: 'transcript', description: 'Return to the composer' },
   { keys: 'y', surface: 'approval', description: 'Allow the call once' },
   { keys: 'n', surface: 'approval', description: 'Reject the call' },
+  { keys: '1–9', surface: 'approval', description: 'Answer with that row, including the ones that ask for more' },
   { keys: 'Esc', surface: 'approval', description: 'Reject the call, failing closed' },
-  { keys: '↑ / ↓', surface: 'approval', description: 'Move between allow and reject' },
+  { keys: '↑ / ↓', surface: 'approval', description: 'Move between the answers' },
   { keys: 'Enter', surface: 'approval', description: 'Confirm the highlighted answer' },
+  { keys: 'Enter', surface: 'approval-feedback', description: 'Reject, sending the typed reason with it' },
+  { keys: 'Esc', surface: 'approval-feedback', description: 'Go back to the answers without deciding' },
   { keys: '1–9', surface: 'question', description: 'Pick an option by index' },
   { keys: 'Space', surface: 'question', description: 'Toggle an option in a multi-select' },
   { keys: '↑ / ↓', surface: 'question', description: 'Move the option selection' },

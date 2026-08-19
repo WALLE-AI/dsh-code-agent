@@ -3,10 +3,11 @@
 import type { ActivityCounters, ActivitySummary } from './activity.ts'
 import type { FileCandidate } from './draft-completion.ts'
 import type { TuiSessionSummary } from './session-selector.ts'
+import type { RowTone } from './styling.ts'
 import type { TranscriptEntry, TranscriptLine } from './transcript-view.ts'
 
 export type {
-  ActivityCounters, ActivitySummary, FileCandidate,
+  ActivityCounters, ActivitySummary, FileCandidate, RowTone,
   TranscriptEntry, TranscriptLine, TuiSessionSummary,
 }
 
@@ -175,7 +176,12 @@ export interface TuiSnapshot {
   approval?: ApprovalPrompt
   question?: QuestionPrompt
   error?: string
+  /** Text of the notice holding the row, if any. */
   notice?: string
+  /** Its tone, when it asked for one. */
+  noticeTone?: RowTone
+  /** How many more are waiting, so the row can say it is not the only one. */
+  noticesQueued: number
 }
 
 export interface TuiActions {

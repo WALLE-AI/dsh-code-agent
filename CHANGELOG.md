@@ -2,6 +2,151 @@
 
 All notable changes to the DeepSeek Harness TUI profile.
 
+## Unreleased
+
+### Added
+
+- **A run of successful look-ups collapses into one card.** A turn that greps
+  once and reads eight files used to spend nine cards and forty rows saying so,
+  which pushed the answer it was working towards off the screen. Three or more
+  consecutive reads and searches that all succeeded now render as a single
+  `✓ 8 reads · 2 searches` row whose body lists what was touched; `Ctrl+O` opens
+  it like any other card, because it *is* an ordinary foldable card rather than
+  a new mechanism.
+
+  What may collapse is deliberately narrow. Only reads and searches, because
+  *which* files were looked at matters more than their contents — a command's
+  output, a diff and a fetched page are never hidden. Never a call that failed,
+  was interrupted, or is still running. Never a nested Code Mode sub-call. And
+  the kind is taken from the card the tool declared, never from its name, so a
+  tool this profile has not seen is left exactly as it was. The tool count in
+  the status row keeps counting what ran, not what is shown.
+
+  A group takes its identity from its first member rather than its position, so
+  it survives the re-projection that happens on every append. A group that can
+  still absorb the call below it does not leave for the terminal's scroll
+  buffer: flushing it early would leave `3 reads` in a buffer the frame can no
+  longer reach while the truth had become four.
+
+- **Approvals answer with more than yes and no.** The panel offered two rows,
+  which is the whole reason people turn approvals off — the only way to stop
+  being asked the same question was to stop being asked any question. Two
+  answers that were always available and simply had nowhere to be typed are now
+  offered:
+
+  - `allow once, then switch to <preset>` grants this call and then sends the
+    same `/permission` command `Shift+Tab` would. It names the preset, because
+    you are changing the rules of the session rather than just this call, and
+    entering `danger-full-access` still takes its own second confirmation.
+  - `reject, and say why` refuses the call and opens one line; what you type is
+    sent as your next message, so the retry is informed rather than identical.
+
+  Neither invents a decision the Harness cannot honour: its outcome set is
+  closed to one-shot values, and session-wide permission is the preset, which is
+  why the wider row names the preset it switches to.
+
+  `y` and `n` keep meaning allow-now and reject-now and never land on a row that
+  would then ask for something. `1`–`9` answer by position. The armed default is
+  computed from the list rather than pinned to an index, and it is always a
+  rejection that settles on its own. `Esc` on the list still fails closed; `Esc`
+  inside the reason field only closes the field, so opening it by mistake costs
+  a keystroke rather than a refusal. On a terminal with no room for four rows
+  the two wider answers are dropped first.
+
+- **Notices take turns instead of overwriting each other.** The row held a
+  single string, so whatever was said last won and nothing ever expired: a
+  terminal-capability warning raised at startup was written over by the
+  `resumed session …` line one statement later and never reached the screen, and
+  a `/mouse` toggle stayed up for the rest of the session. Notices are now
+  queued — each holds the row for its own timeout and then yields it, an answer
+  to something you just did takes the row immediately and gives it back to
+  whatever it displaced, and a repeated event replaces or folds into itself
+  rather than queueing twice. When more are waiting the row says so with a
+  trailing `+2`. An idle session with an empty queue still holds no timer.
+
+### Changed
+
+- `app.tsx` was 888 lines carrying the frame's state, its layout budget, its
+  input dispatch and all five of its modal regions. The decisions moved out to
+  where they can be tested without a terminal: `view-model.ts` derives the whole
+  frame as one pure function, `input-dispatch.ts` acts on a resolved action,
+  and `views/` paints. What is left is the wiring only React can express.
+
+### Fixed
+
+- `interactive-smoke.ts` still required wheel reporting to be enabled on every
+  run, which had stopped being true when the wheel was handed back to the
+  terminal outside the alternate screen. It now asserts what the profile
+  actually does: reporting is claimed on the alternate screen, never claimed
+  outside it, and released whenever it was claimed.
+
+## 0.1.4
+
+### Changed
+
+- **The mouse wheel is the terminal's again, and it reaches the whole session.**
+  The transcript used to be one repainted viewport: every row the session
+  produced lived inside a region the terminal treats as a single frame. The
+  shell's scroll buffer therefore held nothing but torn fragments of earlier
+  repaints — scrolling up showed pieces of old frames rather than the
+  conversation, and the banner existed nowhere the terminal could reach. Wheel
+  reporting was turned on to compensate, which works only on terminals that
+  forward it, and takes the wheel away from the ones that do not: on those the
+  wheel did nothing at all.
+
+  Rows now leave the frame instead. An entry that can no longer change is
+  written once, through Ink's `<Static>`, into the terminal's real scroll
+  buffer; only rows that are still moving stay in the repainted frame, which is
+  sized to its content rather than padded to fill the screen. The wheel, the
+  scrollbar, `Shift+PgUp` and drag-select all work natively, on every terminal,
+  with no reporting mode — and the session is still there after the TUI exits.
+  Wheel reporting is off by default; `/mouse` claims it for the live frame, and
+  `--alternate-screen` restores the previous model wholesale.
+
+  What may leave is deliberately conservative, because scrollback is
+  append-only: the longest prefix of settled entries, never the newest one
+  (streaming grows it), and never past a call that is still running.
+
+  The cost is stated rather than worked around: a row in the terminal's buffer
+  belongs to the terminal, so it cannot be re-wrapped on resize, and its card
+  can no longer be folded with `Ctrl+O`. Both still hold for the live region,
+  where a card spends the time anyone is looking at it.
+
+- Ink falls back to `ESC[2J ESC[3J ESC[H` — which erases the scroll buffer
+  itself — as soon as a frame is as tall as the terminal. That would throw away
+  everything this design hands to the terminal, so it is now a tested
+  invariant that the frame stays strictly shorter, at any size.
+
+## 0.1.3
+
+### Fixed
+
+- **Tool output no longer buries the conversation.** A card folded only when its
+  output had more *lines* than its budget, which missed the case that actually
+  floods a terminal: a few lines each wide enough to wrap across the screen. One
+  `node -e` printing a 2 KB JSON response was two lines by that measure and
+  nineteen rows on screen. Folding is now judged on the rows a card would
+  occupy at the current width, so no tool card costs more than its budget
+  regardless of how its output is shaped.
+- **A failed call is no longer unbounded.** Failures were never folded at all,
+  so a command that died after printing forty frames of stack rendered all
+  forty. A call that has not succeeded — failed, interrupted, or still running —
+  now gets a *larger* budget than a success (8 rows against 3) rather than an
+  infinite one: enough to read the error or watch progress, bounded enough to
+  leave the rest of the session on screen.
+- Together these are why earlier turns scrolled away. On the reported session —
+  eight calls in one turn — the cards came to 66 rows on a 45-row terminal, so
+  the opening question was already gone; they now come to 16, and the whole
+  exchange fits. `ctrl+o` still opens any card in full, and an assistant's
+  answer is never folded for being long: prose is the reply, not evidence.
+
+### Notes
+
+- The `TERM is unset or dumb; the alternate screen buffer is disabled` line in
+  that session is from 0.1.0. Windows sets no `TERM` in cmd, PowerShell or
+  Windows Terminal, which 0.1.0 read as "unknown, assume the worst" and so
+  turned the alternate screen off on every Windows machine. Fixed in 0.1.1.
+
 ## 0.1.2
 
 ### Fixed

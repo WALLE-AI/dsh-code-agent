@@ -236,10 +236,12 @@ describe('terminal frame', () => {
     expect(screen()).toContain('Tip: /help for commands')
   })
 
-  it('scrolls back to the banner on a wheel roll, and types nothing', async () => {
-    // The frame is repainted in place, so the terminal's own scrollback holds
-    // none of the session: the wheel has to move the transcript viewport, the
-    // one place the banner still exists.
+  it('writes settled rows to the terminal once, so the wheel can reach them', async () => {
+    // The banner and every settled turn are handed to the terminal as static
+    // output. Written once, they are the terminal's rows afterwards: its own
+    // scrollback holds them, which is what the wheel scrolls. Repainting them
+    // every frame — what the viewport model did — put them somewhere no
+    // terminal could scroll to.
     const store = new TuiStore(200)
     store.setHeader(width => buildSplash(
       { title: 'DeepSeek Harness TUI', directory: 'repo', tips: ['/help for commands'] },
@@ -249,17 +251,71 @@ describe('terminal frame', () => {
     for (let seq = 1; seq <= 60; seq++) {
       store.append({ seq, kind: 'user', text: `line ${String(seq)}` })
     }
+    const { stdout } = mount(store)
+    await settle()
+    const written = (needle: string): number =>
+      stdout.frames.filter(frame => frame.includes(needle)).length
+    // Everything is on the terminal, however far back it is.
+    expect(written('Tip: /help for commands')).toBe(1)
+    expect(written('line 1')).toBeGreaterThan(0)
+    expect(written('line 60')).toBeGreaterThan(0)
+
+    // A further turn does not rewrite a single row of what came before.
+    const before = stdout.frames.length
+    store.append({ seq: 61, kind: 'user', text: 'line 61' })
+    await settle()
+    const since = stdout.frames.slice(before).join('')
+    expect(since).toContain('line 61')
+    expect(since).not.toContain('Tip: /help for commands')
+  })
+
+  it('keeps an unsettled call and everything after it in the live frame', async () => {
+    // Scrollback is append-only, so one running call pins every row after it:
+    // its own body still streams, and its status glyph is still moving.
+    const store = new TuiStore(200)
+    store.setColumns(80)
+    store.append({ seq: 1, kind: 'user', text: 'settled turn' })
+    store.append({ seq: 2, kind: 'tool-call', callId: 'c1', name: 'bash', text: 'streaming' })
+    store.append({ seq: 3, kind: 'user', text: 'after the call' })
+    const { stdout, screen } = mount(store)
+    await settle()
+    // The running card is repainted, so it lands in more than one write.
+    expect(stdout.frames.filter(frame => frame.includes('settled turn'))).toHaveLength(1)
+    expect(screen()).toContain('[running]')
+    expect(screen()).toContain('after the call')
+  })
+
+
+  it('never emits the escape that would wipe the scrollback it just wrote', async () => {
+    // Ink falls back to `clearTerminal` — `ESC[2J ESC[3J ESC[H`, which erases
+    // the scroll buffer itself — as soon as a frame is as tall as the terminal
+    // (`ink.js:121`). That would throw away every row this design just handed to
+    // the terminal, so the frame has to stay strictly shorter, on any size.
+    for (const rows of [6, 10, 24]) {
+      const store = new TuiStore(200)
+      store.setInteractive(true)
+      store.setHeader(width => buildSplash(
+        { title: 'DeepSeek Harness TUI', directory: 'repo', tips: ['/help for commands'] },
+        width, UNICODE_GLYPHS,
+      ))
+      for (let seq = 1; seq <= 40; seq++) {
+        store.append({ seq, kind: 'user', text: `line ${String(seq)} ${'wide '.repeat(20)}` })
+      }
+      const { stdout } = mount(store, {}, { columns: 60, rows })
+      await settle()
+      expect(stdout.frames.join('')).not.toContain(`${ESC}[3J`)
+    }
+  })
+
+  it('consumes wheel reports without typing them', async () => {
+    // The wheel belongs to the terminal now, but a report can still arrive when
+    // `/mouse` claimed it. It must never reach the composer as text.
+    const store = new TuiStore(200)
+    store.append({ seq: 1, kind: 'user', text: 'hello' })
     const { screen, type } = mount(store)
     await settle()
-    expect(screen()).not.toContain('Tip: /help for commands')
-    // A fast roll batches its reports into one chunk, which is how they arrive.
-    await type('[<64;10;5M'.repeat(40))
-    const rolled = screen()
-    expect(rolled).toContain('Tip: /help for commands')
-    // The reports were consumed, not typed.
-    expect(rolled).not.toContain('64;10;5')
-    await type('[<65;10;5M'.repeat(40))
-    expect(screen()).not.toContain('Tip: /help for commands')
+    await type('[<64;10;5M'.repeat(4))
+    expect(screen()).not.toContain('64;10;5')
   })
 
   it('wraps a wide line instead of cutting it off', async () => {
@@ -630,6 +686,52 @@ describe('command palette and folding', () => {
     await type(String.fromCharCode(27) + '[A')
     await type('\r')
     expect(calls.decideApproval).toHaveBeenLastCalledWith(true)
+  })
+
+  it('sends the rejection reason with the rejection, in one step', async () => {
+    const store = new TuiStore(50)
+    store.setInteractive(true)
+    store.setApproval({ id: 1, toolName: 'bash' })
+    const { calls, type, screen } = mount(store, {}, { columns: 80, rows: 30 })
+    await settle()
+    expect(screen()).toContain('reject, and say why')
+    // Row 3 is `reject, and say why`: allow once, reject, reject-and-say-why.
+    await type('3')
+    expect(screen()).toContain('reason:')
+    // Deciding is deferred until the reason is in: the prompt is still open.
+    expect(calls.decideApproval).not.toHaveBeenCalled()
+    await type('needs a dry run first')
+    await type('\r')
+    expect(calls.decideApproval).toHaveBeenLastCalledWith(false)
+    expect(calls.submit).toHaveBeenLastCalledWith('needs a dry run first')
+  })
+
+  it('backs out of the reason field without having decided anything', async () => {
+    const store = new TuiStore(50)
+    store.setInteractive(true)
+    store.setApproval({ id: 1, toolName: 'bash' })
+    const { calls, type, screen } = mount(store, {}, { columns: 80, rows: 30 })
+    await settle()
+    await type('3')
+    await type('oops')
+    await type(String.fromCharCode(27))
+    expect(calls.decideApproval).not.toHaveBeenCalled()
+    expect(screen()).not.toContain('reason:')
+    // The list is back, and its Esc is the one that fails closed.
+    await type(String.fromCharCode(27))
+    expect(calls.decideApproval).toHaveBeenLastCalledWith(false)
+  })
+
+  it('keeps n rejecting outright, whatever else the list has grown', async () => {
+    const store = new TuiStore(50)
+    store.setInteractive(true)
+    store.setApproval({ id: 1, toolName: 'bash' })
+    const { calls, type, screen } = mount(store, {}, { columns: 80, rows: 30 })
+    await settle()
+    await type('n')
+    expect(calls.decideApproval).toHaveBeenLastCalledWith(false)
+    expect(calls.submit).not.toHaveBeenCalled()
+    expect(screen()).not.toContain('reason:')
   })
 
   it('opens the shortcut sheet with ? and closes it on the next key', async () => {
