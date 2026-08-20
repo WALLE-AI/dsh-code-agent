@@ -26,6 +26,16 @@ describe('session selection', () => {
     expect(resolveSessionSelection(records, '')).toBe('session-b2')
     expect(resolveSessionSelection(records, 'session-a1')).toBe('session-a1')
     expect(resolveSessionSelection(records, 'session-b')).toBe('session-b2')
+    expect(resolveSessionSelection(records, 'latest', { cwd: '/repo' })).toBe('session-a1')
+  })
+
+  it('blocks explicit cross-workspace resumes and canonicalizes cwd', () => {
+    expect(() => resolveSessionSelection(records, 'session-b2', { cwd: '/repo' }))
+      .toThrow('belongs to /other')
+    expect(resolveSessionSelection(records, 'session-a1', { cwd: '/repo/../repo' }))
+      .toBe('session-a1')
+    expect(() => resolveSessionSelection(records, 'latest', { cwd: '/missing' }))
+      .toThrow('no resumable session was found in')
   })
 
   it('fails loudly for missing and ambiguous selections', () => {

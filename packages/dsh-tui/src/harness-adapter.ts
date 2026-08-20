@@ -92,6 +92,8 @@ export interface HarnessHooks {
   /** The model route the Harness actually resolved for this run. */
   model(route: { provider: string; model: string; reasoningEffort?: string }): void
   ready(controls: TuiSessionControls): void
+  /** The public session id after create or resume has attached. */
+  attached?(sessionId: string): void
 }
 
 /** Live capabilities handed to the view once the Agent is attached. */
@@ -531,8 +533,10 @@ export async function executeHarnessTask(
   const controller = await createHarnessAgentController(ctx, hooks, request.model)
   let code = 1
   const session = async (): Promise<number> => {
-    if (request.resumeSessionId === undefined) await controller.create(`session-${randomUUID()}`)
-    else await controller.resume(request.resumeSessionId)
+    const sessionId = request.resumeSessionId === undefined
+      ? await controller.create(`session-${randomUUID()}`)
+      : await controller.resume(request.resumeSessionId)
+    hooks.attached?.(sessionId)
     hooks.ready({
       cancel: () => { controller.cancel({ kind: 'user' }) },
       whenIdle: () => controller.whenIdle(),

@@ -5,7 +5,7 @@ _dsh_tui_complete() {
   local current previous options presets
   current="${COMP_WORDS[COMP_CWORD]}"
   previous="${COMP_WORDS[COMP_CWORD - 1]}"
-  options="-i --alternate-screen --interactive --no-color --resume --permission --model --diagnostic-log --help"
+  options="-i -r --alternate-screen --interactive --no-color --resume --resume-select --permission --model --diagnostic-log --help"
   presets="read-only workspace-write danger-full-access"
 
   case "${previous}" in
@@ -17,7 +17,7 @@ _dsh_tui_complete() {
       COMPREPLY=($(compgen -f -- "${current}"))
       return 0
       ;;
-    --resume)
+    -r|--resume)
       COMPREPLY=($(compgen -W "latest" -- "${current}"))
       return 0
       ;;

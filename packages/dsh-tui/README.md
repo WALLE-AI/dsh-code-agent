@@ -60,7 +60,8 @@ pnpm run check:cli           # dshcodecli 启动器（help / 非 TTY / 非法预
 
 dshcodecli "检查当前改动并运行测试"
 dshcodecli -i --alternate-screen "修复登录竞态"
-dshcodecli -i --resume latest
+dshcodecli --resume latest
+dshcodecli --resume-select
 dshcodecli --permission read-only "review current changes"
 ```
 

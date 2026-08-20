@@ -51,7 +51,7 @@ import {
 
 export function TuiApp({
   store, actions, stdout, theme, onRenderError, animate = true, clock = Date.now,
-  keys = DEFAULT_KEYMAP, screen,
+  keys = DEFAULT_KEYMAP, screen, initialBrowser,
 }: {
   store: TuiStore
   actions: TuiActions
@@ -60,6 +60,7 @@ export function TuiApp({
   /** The effective bindings, once a user's overrides have been merged in. */
   keys?: Keymap
   screen?: TuiScreenController
+  initialBrowser?: BrowserState
   /** Off for a terminal that cannot animate, and for deterministic tests. */
   animate?: boolean
   clock?: () => number
@@ -77,6 +78,7 @@ export function TuiApp({
   const [approvalFeedback, setApprovalFeedback] = useState<string>()
   const [helpOpen, setHelpOpen] = useState(false)
   const [browser, setBrowser] = useState<BrowserState>()
+  const openedInitialBrowser = useRef(false)
   const [dismissed, setDismissed] = useState<number>()
   const [transcriptMode, setTranscriptMode] = useState<TranscriptModeState>()
   const [transcriptAlternate, setTranscriptAlternate] = useState(false)
@@ -84,6 +86,13 @@ export function TuiApp({
   const keySequence = useRef(emptyKeySequence)
   const displayedTokens = useRef<{ value: number; at: number } | undefined>(undefined)
   const { rows, columns } = useTerminalSize(stdout)
+
+  useEffect(() => {
+    if (initialBrowser === undefined || !state.interactive || openedInitialBrowser.current) return
+    openedInitialBrowser.current = true
+    actions.listSessions()
+    setBrowser(initialBrowser)
+  }, [actions, initialBrowser, state.interactive])
 
   // Rows that can no longer change leave for the terminal's own scrollback; the
   // frame keeps only what is still moving. The split has to survive re-renders,
@@ -364,6 +373,7 @@ export function createInkView(
   clock: () => number = Date.now,
   keys: Keymap = DEFAULT_KEYMAP,
   screen?: TuiScreenController,
+  initialBrowser?: BrowserState,
 ): TuiView {
   // Ink repaints by erasing every row it wrote last time; on a full-height
   // frame with a spinner running that is a whole-screen erase ten times a
@@ -391,6 +401,7 @@ export function createInkView(
       animate={animate}
       clock={clock}
       keys={keys}
+      {...initialBrowser === undefined ? {} : { initialBrowser }}
       {...controlledScreen === undefined ? {} : { screen: controlledScreen }}
       {...onRenderError === undefined ? {} : { onRenderError }}
     />,

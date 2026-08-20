@@ -7,7 +7,8 @@ _dsh_tui() {
     '--alternate-screen[use the alternate screen buffer]' \
     '(-i --interactive)'{-i,--interactive}'[keep the session open for follow-up input]' \
     '--no-color[disable semantic terminal colors]' \
-    '--resume=[resume a session by id, id prefix, or latest]:session:(latest)' \
+    '(-r --resume)'{-r,--resume}'=[resume a session by id, id prefix, or latest]:session:(latest)' \
+    '--resume-select[open the session browser at startup]' \
     '--permission=[session permission preset]:preset:(read-only workspace-write danger-full-access)' \
     '--model=[model override as provider/model:reasoning-effort]:route:' \
     '--diagnostic-log=[write a redacted diagnostic log to this file]:path:_files' \

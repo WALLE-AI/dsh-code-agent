@@ -13,6 +13,7 @@ export interface TuiModelSelection {
 export interface TuiStartupValues {
   task: string
   resume?: string
+  resumeSelect?: boolean
   permission?: string
   model?: TuiModelSelection
   diagnosticLog?: string
@@ -27,7 +28,7 @@ export const TUI_PRESETS = ['read-only', 'workspace-write', 'danger-full-access'
 /** Every TUI flag, in the order `--help` prints them; drives shell completion. */
 export const TUI_OPTIONS = [
   '--alternate-screen', '--interactive', '--no-color',
-  '--resume', '--permission', '--model', '--diagnostic-log', '--help',
+  '--resume', '--resume-select', '--permission', '--model', '--diagnostic-log', '--help',
 ] as const
 
 const PRESETS: readonly string[] = TUI_PRESETS
@@ -71,6 +72,7 @@ interface RawOptions {
   color: boolean
   /** Commander reports a valueless `--resume` as `true`, which means "latest". */
   resume?: string | boolean
+  resumeSelect?: boolean
   permission?: string
   model?: string
   diagnosticLog?: string
@@ -87,9 +89,16 @@ export function startupValues(parts: readonly string[], options: RawOptions): Tu
     : options.resume === true || String(options.resume).trim() === ''
       ? 'latest'
       : String(options.resume).trim()
+  if (options.resumeSelect === true && resume !== undefined) {
+    throw new Error('--resume-select cannot be combined with --resume')
+  }
+  if (options.resumeSelect === true && task.trim() !== '') {
+    throw new Error('--resume-select cannot be combined with a task')
+  }
   return {
     task,
     ...(resume === undefined ? {} : { resume }),
+    ...(options.resumeSelect === true ? { resumeSelect: true } : {}),
     ...(options.permission === undefined
       ? {}
       : { permission: parsePermissionPreset(options.permission) }),
@@ -98,7 +107,7 @@ export function startupValues(parts: readonly string[], options: RawOptions): Tu
     alternateScreen: options.alternateScreen,
     // No arguments is the primary REPL entry. A supplied task remains one-shot
     // unless the caller explicitly asks to keep the session open.
-    interactive: options.interactive || (task.trim() === '' && resume === undefined),
+    interactive: options.interactive || task.trim() === '',
     color: options.color,
   }
 }
@@ -114,7 +123,8 @@ export function apply(ctx: HarnessContext): void {
     .option('--alternate-screen', 'use the alternate screen buffer', false)
     .option('-i, --interactive', 'keep the session open for follow-up input', false)
     .option('--no-color', 'disable semantic terminal colors')
-    .option('--resume [session]', 'resume a session by id, id prefix, or "latest"')
+    .option('-r, --resume [session]', 'resume a session by id, id prefix, or "latest"')
+    .option('--resume-select', 'open the session browser at startup', false)
     .option('--permission <preset>', `session permission preset (${PRESETS.join(' | ')})`)
     .option('--model <route>', 'model override as provider/model[:reasoning-effort]')
     .option('--diagnostic-log <path>', 'write a redacted diagnostic log to this file')

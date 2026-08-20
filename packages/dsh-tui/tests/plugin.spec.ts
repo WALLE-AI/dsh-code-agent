@@ -29,6 +29,7 @@ interface Mounted {
   readonly harness: ReturnType<typeof fakeHarness>
   readonly stdin: NodeJS.ReadStream & NodeJS.WriteStream
   readonly stderr: string[]
+  readonly stdout: string[]
   /** Resolves once the view is created, exposing the live store and actions. */
   readonly view: Promise<{ store: TuiStore; actions: TuiActions }>
   unmounted(): boolean
@@ -42,6 +43,11 @@ function mountPlugin(
   const harness = fakeHarness(options)
   const stdin = fakeStream(tty)
   const stdout = fakeStream(tty)
+  const stdoutWrites: string[] = []
+  stdout.write = ((text: string) => {
+    stdoutWrites.push(String(text))
+    return true
+  }) as NodeJS.WriteStream['write']
   const stderr: string[] = []
   const errorStream = fakeStream(false)
   errorStream.write = ((text: string) => {
@@ -66,7 +72,7 @@ function mountPlugin(
   const exitCode = new Promise<number>((resolve) => { settle = resolve })
   harness.ctx.provide('appExit', (code: number) => { settle(code) })
   apply(harness.ctx, { interactive: false, ...config })
-  return { exitCode, harness, stdin, stderr, view, unmounted: () => unmount }
+  return { exitCode, harness, stdin, stderr, stdout: stdoutWrites, view, unmounted: () => unmount }
 }
 
 /** The controller is attached after the view mounts; input is refused before that. */
@@ -162,6 +168,26 @@ describe('bounded shutdown triggers', () => {
 })
 
 describe('interactive session loop', () => {
+  it('prints an exact resume command after a durable /quit', async () => {
+    const mounted = mountPlugin({ task: '', interactive: true })
+    const { actions } = await interactiveSession(mounted)
+    actions.submit('/quit')
+    expect(await mounted.exitCode).toBe(0)
+    expect(mounted.stdout.join('')).toContain('Session saved: fake-session')
+    expect(mounted.stdout.join('')).toContain('Resume: dshcodecli --resume fake-session')
+  })
+
+  it('does not print a saved receipt when final persistence fails', async () => {
+    let calls = 0
+    const mounted = mountPlugin({ task: '', interactive: true }, {
+      flush: async () => ++calls === 1,
+    })
+    const { actions } = await interactiveSession(mounted)
+    actions.submit('/quit')
+    expect(await mounted.exitCode).toBe(NOT_DURABLE_EXIT_CODE)
+    expect(mounted.stdout.join('')).not.toContain('Session saved:')
+  })
+
   it('starts without a synthetic first task and waits for the composer', async () => {
     const mounted = mountPlugin({ task: '', interactive: true })
     const { actions, store } = await interactiveSession(mounted)

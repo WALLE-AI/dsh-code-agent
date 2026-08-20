@@ -35,6 +35,7 @@
       config:
         task: !!js ctx.tuiStartup.task
         resume: !!js ctx.tuiStartup.resume
+        resumeSelect: !!js ctx.tuiStartup.resumeSelect
         permission: !!js ctx.tuiStartup.permission
         model: !!js ctx.tuiStartup.model
         alternateScreen: !!js ctx.tuiStartup.alternateScreen

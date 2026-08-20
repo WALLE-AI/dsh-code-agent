@@ -82,7 +82,7 @@ const POLL_INTERVAL_MS = 250
 function runTui(args: readonly string[], steps: readonly Step[]): Promise<RunResult> {
   const child = ptyModule.spawn(process.execPath, [
     '--import', 'tsx/esm', '--conditions=development', 'apps/cli/src/bin.ts',
-    '--profile', 'tui', '--interactive', ...args,
+    '--profile', 'tui', ...args,
   ], {
     cwd: harness,
     cols: 100,
@@ -158,9 +158,13 @@ const quitSteps: readonly Step[] = [
 ]
 
 try {
-  const first = await runTui([firstTask], quitSteps)
+  const first = await runTui(['--interactive', firstTask], quitSteps)
   if (first.code !== 0) {
     throw new Error(`first TUI run exited ${String(first.code)}\n${first.transcript.slice(-6000)}`)
+  }
+  if (!normalize(first.transcript).includes('Sessionsaved:session-')
+    || !normalize(first.transcript).includes('Resume:dshcodecli--resumesession-')) {
+    throw new Error(`first TUI run did not print a resume receipt\n${first.transcript.slice(-6000)}`)
   }
 
   const firstRunRequests = server.requests.length

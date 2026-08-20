@@ -67,7 +67,7 @@ You can also supply a task directly:
 ~~~bash
 dshcodecli "review the current changes and run the relevant tests"
 dshcodecli -i "review the working tree"
-dshcodecli -i --resume latest
+dshcodecli --resume latest
 dshcodecli --permission read-only
 ~~~
 
@@ -118,12 +118,34 @@ Project configuration never overwrites an already exported variable.
 | <code>dshcodecli</code> | Open the interactive composer |
 | <code>dshcodecli [task...]</code> | Run a one-shot task |
 | <code>dshcodecli -i [task...]</code> | Stay interactive after the first task |
-| <code>dshcodecli -i --resume [id]</code> | Resume by id, unambiguous prefix, or latest and continue the session |
+| <code>dshcodecli --resume [id]</code> | Resume by id, unambiguous prefix, or latest and enter interactive mode |
+| <code>dshcodecli -r [id]</code> | Short form of <code>--resume</code> |
+| <code>dshcodecli --resume-select</code> | Open the current-workspace session browser at startup |
 | <code>dshcodecli --permission PRESET</code> | Select a permission preset |
 | <code>dshcodecli --model ROUTE</code> | Override the model for this run |
 | <code>dshcodecli --no-color</code> | Disable semantic colors |
 | <code>dshcodecli --diagnostic-log PATH</code> | Write a redacted JSONL diagnostic log |
 | <code>dshcodecli --help</code> | Show complete command-line help |
+
+## Exit and Resume
+
+When you exit normally with <code>/quit</code>, the TUI waits for the active task and flushes the session. After persistence succeeds, the terminal prints the exact session ID and resume command:
+
+~~~text
+Session saved: session-...
+Resume: dshcodecli --resume session-...
+~~~
+
+Return to the workspace where the session was created and run that command. A valueless <code>--resume</code> is equivalent to <code>--resume latest</code>; neither form needs <code>-i</code>:
+
+~~~bash
+dshcodecli --resume
+dshcodecli --resume latest
+dshcodecli --resume session-abc
+dshcodecli --resume-select
+~~~
+
+<code>latest</code> and the session browser consider only top-level sessions from the canonical current working directory. If an explicit ID belongs to another directory, the CLI prints the correct <code>cd</code> and resume command instead of silently restoring it in the wrong project. Resume with the same <code>DSH_HOME</code> that stored the session. A force-killed process cannot guarantee a final flush or an exit receipt.
 
 ## Keyboard Reference
 

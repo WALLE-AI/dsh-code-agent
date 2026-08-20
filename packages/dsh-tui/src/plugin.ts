@@ -25,6 +25,7 @@ import {
   type HarnessContext, type HarnessHooks, type HarnessRunRequest, type ModelOverride,
 } from './harness-adapter.ts'
 import { formatSessionRow, resolveSessionSelection, selectableSessions } from './session-selector.ts'
+import { emptyBrowser } from './session-browser.ts'
 import { exitCodeFor, ShutdownCoordinator } from './shutdown.ts'
 import { TuiStore } from './state.ts'
 import { detectTerminal } from './terminal-capabilities.ts'
@@ -40,6 +41,7 @@ export const inject = [
 export interface Config {
   task: string
   resume?: string
+  resumeSelect?: boolean
   permission?: string
   model?: ModelOverride
   diagnosticLog?: string
@@ -233,8 +235,10 @@ function formatModelRoute(model: ModelOverride): string | undefined {
   return model.reasoningEffort === undefined ? route : `${route} · ${model.reasoningEffort}`
 }
 
-async function sessionsNotice(ctx: HarnessContext): Promise<string> {
-  const sessions = selectableSessions(await listHarnessSessions(ctx)).slice(0, 5)
+async function sessionsNotice(ctx: HarnessContext, excludeId?: string): Promise<string> {
+  const sessions = selectableSessions(await listHarnessSessions(ctx), { cwd: process.cwd() })
+    .filter(session => session.id !== excludeId)
+    .slice(0, 5)
   if (sessions.length === 0) return 'no resumable sessions'
   const now = Date.now()
   return sessions.map(session => formatSessionRow(session, 60, now)).join('  |  ')
@@ -288,6 +292,7 @@ async function run(ctx: HarnessContext, config: Config, exit: (code: number) => 
   let submissions = Promise.resolve()
   let view: TuiView | undefined
   let taskCode = 1
+  let activeSessionId: string | undefined
 
   const shutdown = new ShutdownCoordinator({
     stopInput: () => {
@@ -368,7 +373,10 @@ async function run(ctx: HarnessContext, config: Config, exit: (code: number) => 
     expandTranscript: () => { store.expandWindow() },
     listSessions: () => {
       void listHarnessSessions(ctx)
-        .then((records) => { store.setSessions(selectableSessions(records)) })
+        .then((records) => {
+          store.setSessions(selectableSessions(records, { cwd: workspace })
+            .filter(session => session.id !== activeSessionId))
+        })
         .catch((error: unknown) => {
           store.setError(error instanceof Error ? error.message : String(error))
         })
@@ -436,7 +444,7 @@ async function run(ctx: HarnessContext, config: Config, exit: (code: number) => 
         if (line === '/sessions') {
           return store.pushNotice({
             key: ACTION_NOTICE,
-            text: await sessionsNotice(ctx),
+            text: await sessionsNotice(ctx, activeSessionId),
             priority: 'immediate',
             timeoutMs: 20_000,
           })
@@ -460,9 +468,11 @@ async function run(ctx: HarnessContext, config: Config, exit: (code: number) => 
         }
         if (line === '/resume' || line.startsWith('/resume ')) {
           const requested = line.slice('/resume'.length).trim()
+          const records = (await listHarnessSessions(ctx)).filter(session => session.id !== activeSessionId)
           const sessionId = resolveSessionSelection(
-            await listHarnessSessions(ctx),
+            records,
             requested === '' ? 'latest' : requested,
+            { cwd: workspace },
           )
           pendingSwitch = { task: '', resumeSessionId: sessionId }
           diagnostics.record('session-switch', { kind: 'resume' })
@@ -500,7 +510,7 @@ async function run(ctx: HarnessContext, config: Config, exit: (code: number) => 
   try {
     const resumeSessionId = config.resume === undefined
       ? undefined
-      : resolveSessionSelection(await listHarnessSessions(ctx), config.resume)
+      : resolveSessionSelection(await listHarnessSessions(ctx), config.resume, { cwd: workspace })
     guard.enter()
     view = internals.createView(
       store, actions, internals.stdin, internals.stdout, internals.stderr,
@@ -524,6 +534,7 @@ async function run(ctx: HarnessContext, config: Config, exit: (code: number) => 
           return true
         },
       },
+      config.resumeSelect === true ? emptyBrowser : undefined,
     )
     // A typo in the overrides is reported and then ignored: the file is edited
     // from a terminal, so a bad file must never be what stops one from opening.
@@ -580,6 +591,7 @@ async function run(ctx: HarnessContext, config: Config, exit: (code: number) => 
         diagnostics.record('runtime-diagnostic', { message })
         store.setError(message)
       },
+      attached: (sessionId) => { activeSessionId = sessionId },
       ready: (controls) => {
         cancel = () => { controls.cancel() }
         whenIdle = () => controls.whenIdle()
@@ -645,6 +657,9 @@ async function run(ctx: HarnessContext, config: Config, exit: (code: number) => 
   }
   const code = exitCodeFor(shutdown.reason, taskCode)
   diagnostics.record('exit', { code, reason: shutdown.reason, cancelTimedOut: shutdown.cancelTimedOut })
+  if (shutdown.reason === 'quit' && code === 0 && activeSessionId !== undefined) {
+    internals.stdout.write(`Session saved: ${activeSessionId}\nResume: dshcodecli --resume ${activeSessionId}\n`)
+  }
   exit(code)
 }
 

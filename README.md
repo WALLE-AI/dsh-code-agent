@@ -60,7 +60,7 @@ DSH Code Agent will be able to read, edit, and execute files here.
 ~~~bash
 dshcodecli "检查当前改动并运行相关测试"
 dshcodecli -i "review the working tree"
-dshcodecli -i --resume latest
+dshcodecli --resume latest
 dshcodecli --permission read-only
 ~~~
 
@@ -111,12 +111,34 @@ DEEPSEEK_BASE_URL=https://api.deepseek.com
 | <code>dshcodecli</code> | 打开交互式 composer |
 | <code>dshcodecli [task...]</code> | 执行一次性任务 |
 | <code>dshcodecli -i [task...]</code> | 完成首个任务后继续交互 |
-| <code>dshcodecli -i --resume [id]</code> | 按 id、前缀或 latest 恢复并继续会话 |
+| <code>dshcodecli --resume [id]</code> | 按 id、唯一前缀或 latest 恢复，并自动进入交互模式 |
+| <code>dshcodecli -r [id]</code> | <code>--resume</code> 的短参数形式 |
+| <code>dshcodecli --resume-select</code> | 启动后直接打开当前工作区会话浏览器 |
 | <code>dshcodecli --permission PRESET</code> | 选择权限预设 |
 | <code>dshcodecli --model ROUTE</code> | 本次运行覆盖模型 |
 | <code>dshcodecli --no-color</code> | 关闭语义颜色 |
 | <code>dshcodecli --diagnostic-log PATH</code> | 写入脱敏 JSONL 诊断日志 |
 | <code>dshcodecli --help</code> | 查看完整帮助 |
+
+## 退出与恢复会话
+
+使用 <code>/quit</code> 正常退出时，TUI 会等待当前任务结束并刷新会话。持久化成功后，终端会显示准确的 Session ID 和恢复命令：
+
+~~~text
+Session saved: session-...
+Resume: dshcodecli --resume session-...
+~~~
+
+回到创建会话的工作目录，直接执行输出的命令即可恢复。无参数 <code>--resume</code> 等价于 <code>--resume latest</code>，并且不再需要 <code>-i</code>：
+
+~~~bash
+dshcodecli --resume
+dshcodecli --resume latest
+dshcodecli --resume session-abc
+dshcodecli --resume-select
+~~~
+
+<code>latest</code> 和会话浏览器只查询当前规范化工作目录的顶层会话。显式 ID 属于其他目录时，CLI 会显示正确的 <code>cd</code> 和恢复命令，而不会在错误的项目中静默恢复。恢复时必须继续使用保存该会话的 <code>DSH_HOME</code>。强制杀死进程无法保证刷新完成或打印恢复凭据。
 
 ## 常用按键
 

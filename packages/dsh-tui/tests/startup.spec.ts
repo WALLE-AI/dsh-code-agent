@@ -30,10 +30,21 @@ describe('TUI startup options', () => {
   })
 
   it('accepts resume with an id, with a prefix, and without a value', () => {
-    expect(run(['--resume', 'session-a1']).values).toMatchObject({ task: '', resume: 'session-a1' })
-    expect(run(['--resume']).values).toMatchObject({ resume: 'latest' })
+    expect(run(['--resume', 'session-a1']).values).toMatchObject({
+      task: '', resume: 'session-a1', interactive: true,
+    })
+    expect(run(['--resume']).values).toMatchObject({ resume: 'latest', interactive: true })
+    expect(run(['-r', 'session-a1']).values).toMatchObject({ resume: 'session-a1', interactive: true })
     expect(run(['--resume', 'session-a1', 'keep', 'going']).values)
-      .toMatchObject({ task: 'keep going', resume: 'session-a1' })
+      .toMatchObject({ task: 'keep going', resume: 'session-a1', interactive: false })
+  })
+
+  it('opens the startup selector only as an interactive entry', () => {
+    expect(run(['--resume-select']).values).toMatchObject({
+      task: '', resumeSelect: true, interactive: true,
+    })
+    expect(run(['--resume-select', '--resume']).exit).toHaveBeenCalledWith(1)
+    expect(run(['--resume-select', 'task']).exit).toHaveBeenCalledWith(1)
   })
 
   it('carries permission, model, and diagnostic-log selections', () => {
@@ -82,6 +93,6 @@ describe('startup value parsing', () => {
     })).toMatchObject({ task: '', interactive: true })
     expect(startupValues([], {
       alternateScreen: false, interactive: false, color: true, resume: true,
-    })).toMatchObject({ task: '', resume: 'latest' })
+    })).toMatchObject({ task: '', resume: 'latest', interactive: true })
   })
 })

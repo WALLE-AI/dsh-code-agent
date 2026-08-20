@@ -9,6 +9,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createInkView } from '../src/app.tsx'
 import type { TuiActions, TuiView } from '../src/contracts.ts'
 import { UNICODE_GLYPHS } from '../src/glyphs.ts'
+import { DEFAULT_KEYMAP } from '../src/keybindings.ts'
+import { emptyBrowser, type BrowserState } from '../src/session-browser.ts'
 import { buildSplash } from '../src/splash.ts'
 import { TuiStore } from '../src/state.ts'
 import { resolveTheme } from '../src/theme.ts'
@@ -110,6 +112,7 @@ function mount(
   actions: Partial<TuiActions> = {},
   size = { columns: 80, rows: 24 },
   clock: () => number = Date.now,
+  initialBrowser?: BrowserState,
 ) {
   const stdout = virtualStdout(size.columns, size.rows)
   const stdin = virtualStdin()
@@ -129,6 +132,7 @@ function mount(
   // No colour: assertions read the plain text the terminal would show.
   const view = createInkView(
     store, calls, stdin, stdout, stdout, resolveTheme('none'), undefined, true, clock,
+    DEFAULT_KEYMAP, undefined, initialBrowser,
   )
   views.push(view)
   const type = async (data: string): Promise<void> => {
@@ -874,6 +878,23 @@ describe('command palette and folding', () => {
     await type(String.fromCharCode(27) + '[B')
     await type('\r')
     expect(calls.resumeSession).toHaveBeenCalledWith('session-old')
+  })
+
+  it('opens the requested startup browser once the session becomes interactive', async () => {
+    const store = new TuiStore(50)
+    store.setSessions([
+      { id: 'session-old', createdAt: 1_000, live: false, persisted: true, cwd: '/repo' },
+    ])
+    const { calls, screen } = mount(
+      store, {}, { columns: 80, rows: 24 }, Date.now, emptyBrowser,
+    )
+    await settle()
+    expect(screen()).not.toContain('Sessions')
+    store.setInteractive(true)
+    await settle()
+    expect(screen()).toContain('Sessions')
+    expect(screen()).toContain('session-old')
+    expect(calls.listSessions).toHaveBeenCalledOnce()
   })
 
   it('filters the browser as you type and peels one layer per Esc', async () => {
