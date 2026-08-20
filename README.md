@@ -11,6 +11,10 @@
 dsh-code-agent 提供完整的终端交互体验，但不会复制 Agent loop、工具、权限、沙箱或会话持久化。
 这些能力仍由 DeepSeek Harness 负责；本项目专注于把运行过程准确地呈现在终端中，并将用户操作送回 Harness。
 
+<p align="center">
+  <img src="assets/ScreenShot_2026-08-20_195510_115.png" alt="dsh-code-agent 终端交互界面" width="100%">
+</p>
+
 ## 快速开始
 
 ### 安装
