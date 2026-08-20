@@ -116,11 +116,13 @@ const DISPLAY: Readonly<Record<string, string>> = Object.freeze({
  * reads like a chord with a typo in it.
  */
 export function formatChord(chord: string): string {
-  const parts = chord.split('+')
-  return parts
-    .map((part, at) => DISPLAY[part]
-      ?? (part.length === 1 && at > 0 ? part.toUpperCase() : part))
-    .join('+')
+  return chord.split(' ').map(press => {
+    const parts = press.split('+')
+    return parts
+      .map((part, at) => DISPLAY[part]
+        ?? (part.length === 1 && at > 0 ? part.toUpperCase() : part))
+      .join('+')
+  }).join(' ')
 }
 
 /**
@@ -208,6 +210,7 @@ export const DEFAULT_BINDINGS: readonly Binding[] = Object.freeze([
   { action: 'palette:open', chords: ['ctrl+p'], surface: 'composer', description: 'Open the command palette' },
   { action: 'session:browse', chords: ['ctrl+r'], surface: 'composer', description: 'Open the session browser' },
   { action: 'fold:toggle', chords: ['ctrl+o'], surface: 'composer', description: 'Fold or unfold the card in view' },
+  { action: 'transcript:open', chords: ['ctrl+t'], surface: 'composer', description: 'Open the searchable transcript screen' },
   {
     action: 'editor:open',
     chords: ['ctrl+x'],
@@ -219,6 +222,17 @@ export const DEFAULT_BINDINGS: readonly Binding[] = Object.freeze([
   { action: 'scroll:page-down', chords: ['pagedown'], surface: 'composer', description: 'Scroll the transcript down a page' },
   { action: 'scroll:up', chords: ['up', 'k'], surface: 'transcript', description: 'Scroll one row up' },
   { action: 'scroll:down', chords: ['down', 'j'], surface: 'transcript', description: 'Scroll one row down' },
+  { action: 'transcript:close', chords: ['escape', 'q', 'ctrl+t'], surface: 'transcript-screen', description: 'Close the transcript screen' },
+  { action: 'transcript:search', chords: ['/'], surface: 'transcript-screen', description: 'Search the transcript' },
+  { action: 'transcript:search-cancel', chords: ['escape'], surface: 'transcript-screen', description: 'Cancel transcript search input' },
+  { action: 'transcript:search-commit', chords: ['enter'], surface: 'transcript-screen', description: 'Run transcript search' },
+  { action: 'transcript:next-match', chords: ['n'], surface: 'transcript-screen', description: 'Jump to the next search match (N goes back)' },
+  { action: 'transcript:copy-line', chords: ['y'], surface: 'transcript-screen', description: 'Copy the line (Y copies the card)' },
+  { action: 'transcript:restore-draft', chords: ['r'], surface: 'transcript-screen', description: 'Restore the selected user message to the draft' },
+  { action: 'transcript:up', chords: ['up', 'k'], surface: 'transcript-screen', description: 'Move one transcript row up' },
+  { action: 'transcript:down', chords: ['down', 'j'], surface: 'transcript-screen', description: 'Move one transcript row down' },
+  { action: 'transcript:page-up', chords: ['pageup'], surface: 'transcript-screen', description: 'Move one transcript page up' },
+  { action: 'transcript:page-down', chords: ['pagedown'], surface: 'transcript-screen', description: 'Move one transcript page down' },
   {
     action: 'focus:composer',
     chords: ['enter', 'escape'],
@@ -271,6 +285,8 @@ export interface KeymapIssue {
 export interface Keymap {
   /** True when this press is that action. */
   bound(action: string, key: KeyEvent): boolean
+  /** Canonical spelling of one press, used by the chord state machine. */
+  chord(key: KeyEvent): string | undefined
   /** Display form of the first chord, e.g. `Ctrl+P`; empty when unbound. */
   shortcut(action: string): string
   /** The effective table, for the shortcut sheet. */
@@ -285,6 +301,7 @@ function makeKeymap(bindings: readonly Binding[]): Keymap {
       if (chord === undefined) return false
       return byAction.get(action)?.chords.includes(chord) === true
     },
+    chord: chordOf,
     shortcut(action) {
       const first = byAction.get(action)?.chords[0]
       return first === undefined ? '' : formatChord(first)
@@ -315,7 +332,12 @@ function chordsOf(value: Override): readonly string[] | undefined {
 }
 
 /** A chord a user could plausibly have typed; anything else is a typo. */
-const CHORD_PATTERN = /^(ctrl\+|alt\+|shift\+)*[a-z0-9?/.,;'`\-=[\]\\]$|^(ctrl\+|alt\+|shift\+)*(enter|escape|tab|up|down|left|right|home|end|pageup|pagedown|backspace|delete|space)$/
+const PRESS_PATTERN = /^(ctrl\+|alt\+|shift\+)*[a-z0-9?/.,;'`\-=[\]\\]$|^(ctrl\+|alt\+|shift\+)*(enter|escape|tab|up|down|left|right|home|end|pageup|pagedown|backspace|delete|space)$/
+
+function validChord(chord: string): boolean {
+  const presses = chord.split(' ')
+  return presses.length > 0 && presses.length <= 4 && presses.every(press => PRESS_PATTERN.test(press))
+}
 
 /**
  * Merge user overrides onto the defaults.
@@ -358,7 +380,7 @@ export function buildKeymap(
       issues.push({ action, message: `"${action}" must map to a chord, a list of chords, or null` })
       continue
     }
-    const bad = chords.filter(chord => !CHORD_PATTERN.test(chord))
+    const bad = chords.filter(chord => !validChord(chord))
     if (bad.length > 0) {
       issues.push({ action, message: `"${action}" has unreadable chords: ${bad.join(', ')}` })
       continue

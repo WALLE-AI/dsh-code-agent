@@ -27,6 +27,8 @@ export interface TranscriptEntry {
   readonly badge?: string
   /** Present-tense tool-owned phrase for the working line. */
   readonly activity?: string
+  /** Tool-owned one-line summary, preferred by transient working status. */
+  readonly summary?: string
   readonly detail: readonly DetailLine[]
   readonly foldable: boolean
   /** Fold policy before any user override, judged on line count alone. */
@@ -288,6 +290,7 @@ function toolEntry(
     depth,
     header: `${statusGlyph(node.status, options.glyphs ?? UNICODE_GLYPHS)} ${card.title}`,
     ...(card.activity === undefined ? {} : { activity: card.activity }),
+    ...(card.summary === undefined ? {} : { summary: card.summary }),
     ...(card.badge === undefined ? {} : { badge: card.badge }),
     detail,
     foldable: detail.length > 0,

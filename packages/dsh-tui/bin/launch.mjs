@@ -28,6 +28,13 @@ import { createRequire } from 'node:module'
 import { homedir } from 'node:os'
 import { delimiter, dirname, join, parse as parsePath, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
+import {
+  canonicalWorkspace,
+  isHomeWorkspace,
+  promptWorkspaceTrust,
+  trustWorkspace,
+  workspaceNeedsTrust,
+} from './workspace-trust.mjs'
 
 /** Where the vendored Harness lives inside this repository. */
 const HARNESS_RELATIVE = 'opensource/deepseek-harness/deepseek-harness-master'
@@ -369,9 +376,9 @@ export function supportedRuntime(version) {
 
 /**
  * @param {readonly string[]} argv
- * @returns {number} the exit code this process should carry
+ * @returns {Promise<number>} the exit code this process should carry
  */
-export function main(argv) {
+export async function main(argv) {
   const packageRoot = resolve(dirname(realpathSync(fileURLToPath(import.meta.url))), '..')
   const detected = detectMode(packageRoot)
   if (argv[0] === '--version' || argv[0] === '-v') {
@@ -387,8 +394,18 @@ export function main(argv) {
     )
     return 1
   }
-  const cwd = process.cwd()
+  const cwd = canonicalWorkspace(process.cwd())
   const home = resolve(process.env['DSH_HOME']?.trim() || join(homedir(), '.dsh'))
+  const informational = argv.includes('--help') || argv.includes('-h')
+  const trustStore = join(home, 'tui', 'trusted-workspaces.json')
+  if (!informational && process.stdin.isTTY && process.stdout.isTTY
+    && workspaceNeedsTrust(cwd, trustStore)) {
+    const decision = await promptWorkspaceTrust(cwd)
+    if (decision !== 'accepted') return decision === 'cancelled' ? 130 : 1
+    // Trusting the home directory is deliberately session-only: persisting it
+    // would implicitly trust every project and credential beneath it.
+    if (!isHomeWorkspace(cwd)) trustWorkspace(trustStore, cwd)
+  }
   prepareProfile({ home, tuiPackage: packageRoot })
 
   const searched = envSearchPath({

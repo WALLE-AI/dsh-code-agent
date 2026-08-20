@@ -15,7 +15,7 @@ function frameRows(layout: ReturnType<typeof terminalLayout>, input: {
   error?: boolean
 }): number {
   let total = 1 + Number(layout.showStatus) + layout.todoRows
-    + Number(layout.showStatus && layout.showContextBar) + Number(layout.showWorking)
+    + Number(layout.showStatus && layout.showContextBar) + layout.workingRows
     + layout.viewportRows
   // A separating blank row, the title, the preview, and one row per answer.
   if (input.approval === true) {
@@ -135,5 +135,16 @@ describe('terminal layout', () => {
       showStatus: false,
       showQuestionDetail: false,
     })
+  })
+
+  it('budgets a child-agent row and drops only that row first under pressure', () => {
+    expect(terminalLayout({
+      rows: 24, interactive: true, approval: false, commandCount: 0,
+      notice: false, error: false, working: true, workingRows: 2,
+    }).workingRows).toBe(2)
+    expect(terminalLayout({
+      rows: 6, interactive: true, approval: false, commandCount: 0,
+      notice: false, error: false, working: true, workingRows: 2,
+    }).workingRows).toBeLessThan(2)
   })
 })

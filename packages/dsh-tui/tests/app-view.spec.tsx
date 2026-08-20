@@ -918,6 +918,27 @@ describe('command palette and folding', () => {
     expect(screen()).toContain('> hello')
   })
 
+  it('opens a searchable transcript screen without disturbing the composer', async () => {
+    const store = new TuiStore(50)
+    store.setInteractive(true)
+    store.append({ seq: 1, kind: 'user', text: 'alpha marker' })
+    store.append({ seq: 2, kind: 'assistant-final', text: 'beta answer', messageId: 'm1' })
+    const { type, screen } = mount(store, {}, { columns: 80, rows: 16 })
+    await settle()
+    await type(String.fromCharCode(20))
+    expect(screen()).toContain('Transcript')
+    expect(screen()).toContain('/ search')
+    await type('/')
+    await type('alpha')
+    await type('\r')
+    expect(screen()).toContain('1/1')
+    await type('y')
+    expect(screen()).toContain('clipboard unavailable')
+    await type('r')
+    expect(screen()).toContain('ctrl+p commands')
+    expect(screen()).toContain('> alpha marker')
+  })
+
   it('pages older history in when PgUp reaches the oldest rendered row', async () => {
     const store = new TuiStore(2, {}, 20)
     for (let seq = 0; seq < 10; seq++) {

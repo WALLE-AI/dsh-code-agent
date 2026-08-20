@@ -105,7 +105,11 @@ export function repaintFrame(chunk: string, rows: readonly string[]): FramePaint
  * contract — resolves against the real stream, so callers cannot tell the
  * difference except by watching the bytes.
  */
-export function paintInPlace<T extends NodeJS.WriteStream>(stream: T): T {
+export type PaintedStream<T extends NodeJS.WriteStream = NodeJS.WriteStream> = T & {
+  invalidateFrame(): void
+}
+
+export function paintInPlace<T extends NodeJS.WriteStream>(stream: T): PaintedStream<T> {
   let rows: readonly string[] = []
   const write = ((chunk: unknown, ...rest: unknown[]): boolean => {
     if (typeof chunk !== 'string') return (stream.write as (...args: unknown[]) => boolean)(chunk, ...rest)
@@ -117,6 +121,7 @@ export function paintInPlace<T extends NodeJS.WriteStream>(stream: T): T {
   return new Proxy(stream, {
     get(target, property): unknown {
       if (property === 'write') return write
+      if (property === 'invalidateFrame') return () => { rows = [] }
       // Resolved against the stream itself, not the proxy: a getter must not be
       // re-entered through this trap.
       const value = Reflect.get(target, property) as unknown
@@ -124,5 +129,5 @@ export function paintInPlace<T extends NodeJS.WriteStream>(stream: T): T {
       // an Ink `resize` listener has to reach the terminal's own emitter.
       return typeof value === 'function' ? (value as (...args: unknown[]) => unknown).bind(target) : value
     },
-  })
+  }) as PaintedStream<T>
 }

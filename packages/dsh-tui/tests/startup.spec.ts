@@ -46,7 +46,12 @@ describe('TUI startup options', () => {
   it('rejects invalid values before the terminal is touched', () => {
     expect(run(['--permission', 'yolo', 'go']).exit).toHaveBeenCalledWith(1)
     expect(run(['--model', 'a/b/c', 'go']).exit).toHaveBeenCalledWith(1)
-    expect(run([]).exit).toHaveBeenCalledWith(1)
+  })
+
+  it('starts an empty interactive session when invoked without arguments', () => {
+    expect(run([]).values).toEqual({
+      task: '', alternateScreen: false, interactive: true, color: true,
+    })
   })
 })
 
@@ -71,10 +76,10 @@ describe('startup value parsing', () => {
     expect(() => parsePermissionPreset('none')).toThrow('unknown permission preset')
   })
 
-  it('requires a task unless resume selects a session', () => {
-    expect(() => startupValues([], {
+  it('uses an empty task for the primary interactive entry and for resume', () => {
+    expect(startupValues([], {
       alternateScreen: false, interactive: false, color: true,
-    })).toThrow('a task is required')
+    })).toMatchObject({ task: '', interactive: true })
     expect(startupValues([], {
       alternateScreen: false, interactive: false, color: true, resume: true,
     })).toMatchObject({ task: '', resume: 'latest' })

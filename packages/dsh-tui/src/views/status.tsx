@@ -20,9 +20,14 @@ export function WorkingLine({ vm, theme }: {
   if (vm.workingLine === undefined) return null
   // A stall is not an error — the model is slow, not broken — so it takes the
   // warning tone rather than the red one an actual failure gets.
-  return <Text {...themed(theme, vm.workingLine.stalled ? 'warning' : 'tool')}>
-    {vm.workingLine.text}
-  </Text>
+  return <Box flexDirection="column">
+    <Text {...themed(theme, vm.workingLine.stalled ? 'warning' : 'tool')}>
+      {vm.workingLine.text}
+    </Text>
+    {vm.layout.workingRows < 2 || vm.workingLine.subagentText === undefined
+      ? null
+      : <Text dimColor>{vm.workingLine.subagentText}</Text>}
+  </Box>
 }
 
 export function TodoPanel({ vm, theme }: {

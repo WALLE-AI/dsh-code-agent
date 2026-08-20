@@ -81,6 +81,7 @@ const CSI = `${String.fromCharCode(0x1b)}[`
 class TerminalGuard {
   private entered = false
   private mouseOn = false
+  private overlayScreen = false
   constructor(
     private readonly output: TerminalOutput,
     private readonly alternateScreen: boolean,
@@ -123,11 +124,27 @@ class TerminalGuard {
     return this.mouseOn
   }
 
+  enterScreen(): boolean {
+    if (!this.entered || !this.mouseCapable) return false
+    if (!this.alternateScreen && !this.overlayScreen) {
+      this.output.write(`${CSI}?1049h`)
+      this.overlayScreen = true
+    }
+    return true
+  }
+
+  exitScreen(): void {
+    if (!this.overlayScreen) return
+    this.overlayScreen = false
+    this.output.write(`${CSI}?1049l`)
+  }
+
   restore(): void {
     if (!this.entered) return
     // Reporting must stop before the buffer goes away, or the shell inherits a
     // terminal that prints `[<64;…M` at every scroll.
     this.setMouse(false)
+    this.exitScreen()
     this.entered = false
     // Show the cursor and stop bracketed paste before leaving the buffer.
     this.output.write(`${CSI}?25h${CSI}?2004l`)
@@ -228,8 +245,8 @@ async function run(ctx: HarnessContext, config: Config, exit: (code: number) => 
   if (!capabilities.interactive) {
     throw new Error('TUI requires interactive stdin and stdout; use --profile headless for redirected IO')
   }
-  if (config.task.trim() === '' && config.resume === undefined) {
-    throw new Error('task must not be empty unless --resume selects a session')
+  if (config.task.trim() === '' && config.resume === undefined && config.interactive !== true) {
+    throw new Error('task must not be empty outside an interactive or resumed session')
   }
   const diagnostics: DiagnosticLog = config.diagnosticLog === undefined
     ? silentDiagnosticLog
@@ -497,6 +514,16 @@ async function run(ctx: HarnessContext, config: Config, exit: (code: number) => 
       capabilities.unicode,
       Date.now,
       keys.keymap,
+      {
+        enter: () => guard.enterScreen(),
+        exit: () => { guard.exitScreen() },
+        copy: text => {
+          if (capabilities.multiplexer !== undefined || capabilities.remote) return false
+          const encoded = Buffer.from(text, 'utf8').toString('base64')
+          internals.stdout.write(`\x1b]52;c;${encoded}\x07`)
+          return true
+        },
+      },
     )
     // A typo in the overrides is reported and then ignored: the file is edited
     // from a terminal, so a bad file must never be what stops one from opening.

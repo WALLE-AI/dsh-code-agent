@@ -162,6 +162,14 @@ describe('bounded shutdown triggers', () => {
 })
 
 describe('interactive session loop', () => {
+  it('starts without a synthetic first task and waits for the composer', async () => {
+    const mounted = mountPlugin({ task: '', interactive: true })
+    const { actions, store } = await interactiveSession(mounted)
+    expect(store.snapshot().nodes).toEqual([])
+    actions.cancel()
+    await mounted.exitCode
+  })
+
   it('attaches a second session for /new and still exits cleanly', async () => {
     const mounted = mountPlugin({ task: 'do it', interactive: true })
     const { actions, store } = await interactiveSession(mounted)

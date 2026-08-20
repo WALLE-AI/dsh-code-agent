@@ -15,11 +15,15 @@ CLI.
 pnpm install
 pnpm link --global --dir packages/dsh-tui   # makes dshcodecli available anywhere
 
+dshcodecli
 dshcodecli "fix the race in the login module and run the related tests"
 dshcodecli -i "review the working tree"
 dshcodecli -i --resume latest
 ```
 
+With no task, `dshcodecli` opens an interactive composer and waits for the first
+message; it does not send a startup prompt. The first run in a directory asks
+you to confirm that workspace before reading its `.env` or starting Harness.
 The directory you run it in is the workspace the agent reads and edits. Inside
 this repository the command runs the vendored CLI from source; installed
 elsewhere it uses the installed `dsh` (override with `DSH_CLI`). `pnpm tui --`
@@ -61,7 +65,7 @@ the TUI opens instead of leaving it to fail on the first turn.
 
 | Flag | Meaning |
 |---|---|
-| `[task...]` | The first message. Required unless `--resume` is given. |
+| `[task...]` | Optional first message. With none, start an interactive composer. |
 | `-i`, `--interactive` | Keep the session open after the first task for follow-ups. |
 | `--resume [session]` | Resume by session id, unambiguous id prefix, or `latest`. |
 | `--permission <preset>` | `read-only`, `workspace-write` (default), `danger-full-access`. |
@@ -104,6 +108,7 @@ cp packages/dsh-tui/completions/dsh-tui.fish ~/.config/fish/completions/dsh.fish
 | `Ctrl+P` | Command palette: type to filter, `↑`/`↓` to select, `Enter` to prefill the draft, `Esc` to close. |
 | `Ctrl+R` | Open the session browser, a full screen. Type to filter — the list *is* the search result, there is no mode to enter. `↑`/`↓` and `PgUp`/`PgDn` move the cursor, `Enter` resumes, `Esc` clears the filter and then closes. The cursor follows the session rather than the row number, so filtering cannot silently move it onto a different one. Wide terminals show a preview beside the list. |
 | `Ctrl+O` | Fold or unfold the tool card you are looking at, including a collapsed run of look-ups. |
+| `Ctrl+T` | Open the searchable transcript screen. `/` searches, `n`/`N` moves between matches, `y` copies a line, `Y` copies its card, `r` restores a selected user message to the draft, and `q` or `Esc` closes. |
 | `Ctrl+X` | Open that card's first file location in `$EDITOR`. |
 | `↑` / `↓` | Move between lines of a multi-line draft, then walk the draft history. Inside a question, moves the option selection. |
 | `1`–`9`, `Space` | Pick a question option; `Space` toggles in multi-select. |
@@ -131,6 +136,10 @@ Chords are lowercase, with `ctrl+`, `alt+` and `shift+` prefixes: `ctrl+g`,
 `surface:verb` ids shown by the shortcut sheet — `palette:open`,
 `session:browse`, `fold:toggle`, `editor:open`, `permission:cycle`,
 `caret:word-left`, and so on.
+
+Multi-key chords contain space-separated presses, for example
+`"editor:open": "ctrl+x ctrl+e"`. A prefix waits for up to one second; if the
+next press does not complete it, that next press is handled normally.
 
 `app:cancel` (`Ctrl+C`) and `app:escape` (`Esc`) are **reserved** and cannot be
 rebound or unbound: a terminal you cannot get out of is not a terminal.

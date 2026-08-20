@@ -68,6 +68,31 @@ describe('terminal cards', () => {
     expect(card.dropped).toBeGreaterThan(0)
     expect(rows(card).at(-1)).toBe('line-4999')
   })
+
+  it('uses sanitized summary and condensed intent only when output is omitted', () => {
+    const full = buildToolCard(node({ output: 'one\ntwo' }), {
+      call: {
+        card: 'terminal', title: 'Full', summary: 'Ran tests\ncleanly',
+        condensed: { title: 'Compact', body: [{ text: 'short' }] },
+      },
+      result: { card: 'terminal', output: 'one\ntwo', exitCode: 0 },
+    })
+    expect(full).toMatchObject({ title: 'Full', summary: 'Ran tests cleanly' })
+    expect(rows(full)).toEqual(['one', 'two'])
+
+    const compact = buildToolCard(node({ output: 'long output' }), {
+      call: { card: 'terminal', title: 'Full' },
+      result: {
+        card: 'terminal', output: 'long output', truncated: true,
+        condensed: {
+          title: 'Compact\nresult',
+          body: [{ text: `${ESC}]0;bad${String.fromCharCode(7)}safe`, tone: 'not-a-tone' as never }],
+        },
+      },
+    })
+    expect(compact).toMatchObject({ title: 'Compact result', truncated: true })
+    expect(compact.body).toEqual([{ text: 'safe' }])
+  })
 })
 
 describe('diff cards', () => {

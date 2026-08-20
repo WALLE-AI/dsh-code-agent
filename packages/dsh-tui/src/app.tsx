@@ -11,11 +11,11 @@
 import React, { useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { Box, render, Static, useInput } from 'ink'
 import { paintInPlace } from './frame-writer.ts'
-import { emptyComposer, type ComposerState } from './composer.ts'
-import type { TuiActions, TuiView } from './contracts.ts'
+import { emptyComposer, insertComposer, type ComposerState } from './composer.ts'
+import type { TuiActions, TuiScreenController, TuiView } from './contracts.ts'
 import { useAnimationClock, useTerminalSize } from './hooks.tsx'
 import { dispatchAction, keepsCancelArmed, type PaletteState } from './input-dispatch.ts'
-import { fromInkKey, resolveKey } from './keymap.ts'
+import { emptyKeySequence, fromInkKey, resolveKeySequence } from './keymap.ts'
 import { DEFAULT_KEYMAP, type Keymap } from './keybindings.ts'
 import { readMouse, WHEEL_ROWS } from './mouse.ts'
 import { RenderBoundary } from './render-boundary.tsx'
@@ -34,6 +34,7 @@ import { resolveTheme, type Theme } from './theme.ts'
 import type { TranscriptLine } from './transcript-view.ts'
 import { emptyViewport, scrollViewport, syncViewport } from './viewport.ts'
 import { buildViewModel, keyContextOf, type UiState } from './view-model.ts'
+import { nextDisplayedTokenCount } from './working-line.ts'
 import type { BrowserState } from './session-browser.ts'
 import { OverlayList } from './ui/list.tsx'
 import { TranscriptRow } from './views/transcript.tsx'
@@ -42,10 +43,15 @@ import { QuestionPanel } from './views/question.tsx'
 import { ComposerView, CompletionList } from './views/composer.tsx'
 import { StatusRegion, TodoPanel, WorkingLine } from './views/status.tsx'
 import { HelpScreen, SessionBrowserScreen } from './views/screens.tsx'
+import { TranscriptScreen } from './views/transcript-screen.tsx'
+import {
+  commitTranscriptSearch, copyTranscriptText, jumpTranscriptMatch, moveTranscriptCursor,
+  openTranscriptMode, type TranscriptModeState,
+} from './transcript-mode.ts'
 
 export function TuiApp({
   store, actions, stdout, theme, onRenderError, animate = true, clock = Date.now,
-  keys = DEFAULT_KEYMAP,
+  keys = DEFAULT_KEYMAP, screen,
 }: {
   store: TuiStore
   actions: TuiActions
@@ -53,6 +59,7 @@ export function TuiApp({
   theme: Theme
   /** The effective bindings, once a user's overrides have been merged in. */
   keys?: Keymap
+  screen?: TuiScreenController
   /** Off for a terminal that cannot animate, and for deterministic tests. */
   animate?: boolean
   clock?: () => number
@@ -71,6 +78,11 @@ export function TuiApp({
   const [helpOpen, setHelpOpen] = useState(false)
   const [browser, setBrowser] = useState<BrowserState>()
   const [dismissed, setDismissed] = useState<number>()
+  const [transcriptMode, setTranscriptMode] = useState<TranscriptModeState>()
+  const [transcriptAlternate, setTranscriptAlternate] = useState(false)
+  const transcriptEntered = useRef(false)
+  const keySequence = useRef(emptyKeySequence)
+  const displayedTokens = useRef<{ value: number; at: number } | undefined>(undefined)
   const { rows, columns } = useTerminalSize(stdout)
 
   // Rows that can no longer change leave for the terminal's own scrollback; the
@@ -98,7 +110,14 @@ export function TuiApp({
   }
   // A single clock read keeps every row of one frame consistent with each other.
   const now = clock()
-  const vm = buildViewModel({ state, ui, rows, columns, liveLines, now, animate })
+  const tokenTarget = state.activity.tokens?.output ?? 0
+  const tokenClock = displayedTokens.current ?? { value: tokenTarget, at: now }
+  tokenClock.value = nextDisplayedTokenCount(tokenClock.value, tokenTarget, now - tokenClock.at)
+  tokenClock.at = now
+  displayedTokens.current = tokenClock
+  const vm = buildViewModel({
+    state, ui, rows, columns, liveLines, now, animate, displayedTokens: tokenClock.value,
+  })
 
   const questionPrompt = state.question
   useEffect(() => {
@@ -140,6 +159,9 @@ export function TuiApp({
     const timer = setInterval(() => { store.tickNotices() }, NOTICE_TICK_MS)
     return () => { clearInterval(timer) }
   }, [noticesPending, store])
+  useEffect(() => () => {
+    if (transcriptEntered.current) screen?.exit()
+  }, [screen])
 
   useInput((input, key) => {
     // Wheel notches arrive as input, not as scrollback: the frame is repainted
@@ -155,9 +177,90 @@ export function TuiApp({
       }
       return
     }
-    const action = resolveKey(
-      vm.surface, fromInkKey(input, key), keyContextOf(state, ui, vm), keys,
+    const active = transcriptMode === undefined ? vm.surfaces : ['transcript-screen'] as const
+    const resolved = resolveKeySequence(
+      keySequence.current,
+      active,
+      fromInkKey(input, key),
+      {
+        ...keyContextOf(state, ui, vm),
+        transcriptSearch: transcriptMode?.searchDraft !== undefined,
+      },
+      keys,
     )
+    keySequence.current = resolved.state
+    if (resolved.pending) return
+    const action = resolved.action
+    if (action?.kind === 'transcript-open') {
+      const alternate = screen?.enter() ?? false
+      transcriptEntered.current = alternate
+      setTranscriptAlternate(alternate)
+      setTranscriptMode(openTranscriptMode(state.lines.length, Math.max(1, rows - 2)))
+      return
+    }
+    if (transcriptMode !== undefined && action !== undefined) {
+      const capacity = Math.max(1, rows - 2)
+      switch (action.kind) {
+        case 'transcript-close':
+          if (transcriptEntered.current) screen?.exit()
+          transcriptEntered.current = false
+          setTranscriptMode(undefined)
+          return
+        case 'transcript-move':
+          setTranscriptMode(moveTranscriptCursor(
+            transcriptMode, action.delta, state.lines.length, capacity,
+          ))
+          return
+        case 'transcript-search-open':
+          setTranscriptMode({ ...transcriptMode, searchDraft: transcriptMode.query, notice: undefined })
+          return
+        case 'transcript-search-type':
+          setTranscriptMode({
+            ...transcriptMode,
+            searchDraft: (transcriptMode.searchDraft ?? '') + action.text,
+            notice: undefined,
+          })
+          return
+        case 'transcript-search-backspace':
+          setTranscriptMode({
+            ...transcriptMode,
+            searchDraft: Array.from(transcriptMode.searchDraft ?? '').slice(0, -1).join(''),
+          })
+          return
+        case 'transcript-search-cancel':
+          setTranscriptMode({ ...transcriptMode, searchDraft: undefined })
+          return
+        case 'transcript-search-commit':
+          setTranscriptMode(commitTranscriptSearch(transcriptMode, state.lines, capacity))
+          return
+        case 'transcript-match':
+          setTranscriptMode(jumpTranscriptMatch(
+            transcriptMode, state.lines, action.direction, capacity,
+          ))
+          return
+        case 'transcript-copy': {
+          const text = copyTranscriptText(transcriptMode, state.lines, action.wholeEntry)
+          const copied = text !== '' && (screen?.copy(text) ?? false)
+          setTranscriptMode({ ...transcriptMode, notice: copied ? 'copied' : 'clipboard unavailable' })
+          return
+        }
+        case 'transcript-restore-draft': {
+          const line = state.lines[transcriptMode.cursor]
+          if (line?.tone !== 'user') {
+            setTranscriptMode({ ...transcriptMode, notice: 'select a user message' })
+            return
+          }
+          const text = copyTranscriptText(transcriptMode, state.lines, true)
+            .replace(/^>\s?/, '')
+          setComposer(current => insertComposer({ ...current, draft: '', cursor: 0 }, text))
+          if (transcriptEntered.current) screen?.exit()
+          transcriptEntered.current = false
+          setTranscriptMode(undefined)
+          return
+        }
+        default: return
+      }
+    }
     if (action === undefined) {
       if ((vm.surface === 'composer' || vm.surface === 'transcript') && confirm !== undefined) {
         setConfirm(undefined)
@@ -191,6 +294,16 @@ export function TuiApp({
     })
   })
 
+  if (transcriptMode !== undefined) {
+    return <TranscriptScreen
+      state={transcriptMode}
+      lines={state.lines}
+      rows={rows}
+      columns={columns}
+      theme={theme}
+      alternate={transcriptAlternate}
+    />
+  }
   if (vm.helpVisible) {
     return <HelpScreen theme={theme} rows={rows} columns={columns} keys={keys} />
   }
@@ -250,11 +363,25 @@ export function createInkView(
   animate = true,
   clock: () => number = Date.now,
   keys: Keymap = DEFAULT_KEYMAP,
+  screen?: TuiScreenController,
 ): TuiView {
   // Ink repaints by erasing every row it wrote last time; on a full-height
   // frame with a spinner running that is a whole-screen erase ten times a
   // second. The painter rewrites only the rows that differ.
   const painted = paintInPlace(stdout)
+  const controlledScreen = screen === undefined ? undefined : {
+    enter: () => {
+      painted.invalidateFrame()
+      const entered = screen.enter()
+      painted.invalidateFrame()
+      return entered
+    },
+    exit: () => {
+      screen.exit()
+      painted.invalidateFrame()
+    },
+    copy: (text: string) => screen.copy(text),
+  }
   const instance = render(
     <TuiApp
       store={store}
@@ -264,6 +391,7 @@ export function createInkView(
       animate={animate}
       clock={clock}
       keys={keys}
+      {...controlledScreen === undefined ? {} : { screen: controlledScreen }}
       {...onRenderError === undefined ? {} : { onRenderError }}
     />,
     // Ink would unmount on the first Ctrl+C; cancellation must go through the

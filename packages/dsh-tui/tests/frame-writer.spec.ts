@@ -101,6 +101,10 @@ describe('paintInPlace', () => {
     painted.write(inkWrite(2, ['one', 'TWO']))
     expect(stream.written[2]).toBe(`${ESC}[2A${ESC}[G\nTWO${ESC}[0m${ESC}[K\n`)
 
+    painted.invalidateFrame()
+    painted.write(inkWrite(2, ['one', 'TWO']))
+    expect(stream.written[3]).toContain(`${ESC}[2K`)
+
     // A listener registered through the wrapper has to reach the real stream:
     // Ink's resize handling is one of them.
     let resized = 0

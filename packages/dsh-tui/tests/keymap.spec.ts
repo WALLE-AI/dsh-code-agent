@@ -25,7 +25,7 @@ function press(overrides: Partial<KeyEvent> = {}): KeyEvent {
 
 const SURFACES: readonly UiSurface[] = [
   'approval', 'approval-feedback', 'question', 'palette', 'help', 'browser',
-  'transcript', 'composer',
+  'completion', 'transcript-screen', 'transcript', 'composer',
 ]
 
 describe('key translation', () => {
@@ -188,6 +188,31 @@ describe('open cascade', () => {
     expect(resolveKey('transcript', press({ input: 'j' }), OPEN))
       .toEqual({ kind: 'scroll', direction: 1, page: false })
     expect(resolveKey('transcript', press({ input: 'hello' }), OPEN)).toBeUndefined()
+  })
+
+  it('offers stacked contexts from the innermost layer outward', () => {
+    const completion = { ...OPEN, completionOpen: true }
+    expect(resolveKey(['completion', 'composer'], press({ name: 'up' }), completion))
+      .toEqual({ kind: 'completion-move', delta: -1 })
+    expect(resolveKey(['completion', 'composer'], press({ input: 'x' }), completion))
+      .toEqual({ kind: 'composer-insert', text: 'x' })
+    expect(resolveKey(['approval', 'composer'], press({ input: 'x' }), OPEN)).toBeUndefined()
+  })
+
+  it('owns transcript search, navigation, and copy keys in its screen context', () => {
+    expect(resolveKey('composer', press({ input: 't', ctrl: true }), OPEN))
+      .toEqual({ kind: 'transcript-open' })
+    expect(resolveKey('transcript-screen', press({ input: '/' }), OPEN))
+      .toEqual({ kind: 'transcript-search-open' })
+    expect(resolveKey('transcript-screen', press({ input: 'N' }), OPEN))
+      .toEqual({ kind: 'transcript-match', direction: -1 })
+    expect(resolveKey('transcript-screen', press({ input: 'Y' }), OPEN))
+      .toEqual({ kind: 'transcript-copy', wholeEntry: true })
+    expect(resolveKey('transcript-screen', press({ input: 'r' }), OPEN))
+      .toEqual({ kind: 'transcript-restore-draft' })
+    expect(resolveKey(
+      'transcript-screen', press({ input: 'x' }), { ...OPEN, transcriptSearch: true },
+    )).toEqual({ kind: 'transcript-search-type', text: 'x' })
   })
 
   it('returns to the composer on Enter or Esc without arming a cancel', () => {

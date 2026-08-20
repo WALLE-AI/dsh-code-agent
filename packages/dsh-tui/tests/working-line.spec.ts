@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { displayWidth } from '../src/terminal-text.ts'
 import {
-  buildWorkingLine, STALL_AFTER_MS, TOKENS_AFTER_MS, workingVerb,
+  buildWorkingLine, nextDisplayedTokenCount, STALL_AFTER_MS, TOKENS_AFTER_MS, workingVerb,
   type WorkingLineInput,
 } from '../src/working-line.ts'
 
@@ -50,6 +50,21 @@ describe('working line', () => {
       const row = line({ ...BASE, tokens: 90_000, elapsedMs: 90_000, silentMs: 60_000 }, columns)
       expect(displayWidth(row)).toBeLessThanOrEqual(columns)
     }
+  })
+
+  it('eases token counts monotonically without overshooting either direction', () => {
+    expect(nextDisplayedTokenCount(0, 1_000, 100)).toBe(200)
+    expect(nextDisplayedTokenCount(900, 1_000, 1_000)).toBe(1_000)
+    expect(nextDisplayedTokenCount(1_000, 0, 100)).toBe(800)
+    expect(nextDisplayedTokenCount(10, 10, 100)).toBe(10)
+  })
+
+  it('adds a width-bounded child-agent tree row', () => {
+    const built = buildWorkingLine({
+      ...BASE, subagent: 'researching a very long dependency graph', treePrefix: '\\-',
+    }, 20)
+    expect(built.subagentText).toContain('researching')
+    expect(displayWidth(built.subagentText ?? '')).toBeLessThanOrEqual(20)
   })
 })
 

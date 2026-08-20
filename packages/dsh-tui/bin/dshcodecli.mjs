@@ -3,4 +3,4 @@
 // that the logic stays importable — and therefore testable — without running it.
 import { main } from './launch.mjs'
 
-process.exitCode = main(process.argv.slice(2))
+process.exitCode = await main(process.argv.slice(2))

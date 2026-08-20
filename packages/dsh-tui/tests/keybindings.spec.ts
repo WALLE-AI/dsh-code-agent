@@ -11,7 +11,10 @@ import {
   buildKeymap, chordOf, DEFAULT_BINDINGS, DEFAULT_KEYMAP, describeIssues,
   formatChord, parseKeybindings,
 } from '../src/keybindings.ts'
-import { keyBindingDocs, resolveKey, type KeyContext, type KeyEvent } from '../src/keymap.ts'
+import {
+  emptyKeySequence, KEY_SEQUENCE_TIMEOUT_MS, keyBindingDocs, resolveKey,
+  resolveKeySequence, type KeyContext, type KeyEvent,
+} from '../src/keymap.ts'
 
 function press(overrides: Partial<KeyEvent> = {}): KeyEvent {
   return { input: '', ctrl: false, meta: false, shift: false, ...overrides }
@@ -62,6 +65,7 @@ describe('showing a chord', () => {
     expect(formatChord('j')).toBe('j')
     expect(formatChord('shift+tab')).toBe('Shift+Tab')
     expect(formatChord('pageup')).toBe('PgUp')
+    expect(formatChord('ctrl+x ctrl+e')).toBe('Ctrl+X Ctrl+E')
   })
 })
 
@@ -110,6 +114,35 @@ describe('user overrides', () => {
     // And it no longer clutters the sheet.
     expect(keyBindingDocs(unbound).some(doc => doc.description.includes('shortcut sheet')))
       .toBe(false)
+  })
+
+  it('resolves a configured multi-key chord without leaking its prefix', () => {
+    const { keymap, issues } = buildKeymap({ 'editor:open': 'ctrl+x ctrl+e' })
+    expect(issues).toEqual([])
+    const first = resolveKeySequence(
+      emptyKeySequence, ['composer'], press({ input: 'x', ctrl: true }), OPEN, keymap, 100,
+    )
+    expect(first.pending).toBe(true)
+    expect(first.action).toBeUndefined()
+    const second = resolveKeySequence(
+      first.state, ['composer'], press({ input: 'e', ctrl: true }), OPEN, keymap, 200,
+    )
+    expect(second).toMatchObject({ pending: false, action: { kind: 'open-editor' } })
+    expect(keymap.shortcut('editor:open')).toBe('Ctrl+X Ctrl+E')
+  })
+
+  it('replays the current key after an invalid or expired chord prefix', () => {
+    const { keymap } = buildKeymap({ 'editor:open': 'ctrl+x ctrl+e' })
+    const first = resolveKeySequence(
+      emptyKeySequence, ['composer'], press({ input: 'x', ctrl: true }), OPEN, keymap, 100,
+    )
+    expect(resolveKeySequence(
+      first.state, ['composer'], press({ input: 'z' }), OPEN, keymap, 200,
+    ).action).toEqual({ kind: 'composer-insert', text: 'z' })
+    expect(resolveKeySequence(
+      first.state, ['composer'], press({ input: 'e', ctrl: true }), OPEN, keymap,
+      100 + KEY_SEQUENCE_TIMEOUT_MS + 1,
+    ).action).toEqual({ kind: 'composer-move', motion: 'line-end' })
   })
 
   it('refuses to rebind the keys that reach the shutdown', () => {

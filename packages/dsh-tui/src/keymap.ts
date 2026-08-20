@@ -30,7 +30,7 @@ export interface KeyEvent {
  */
 export type UiSurface =
   | 'approval' | 'approval-feedback' | 'question' | 'palette' | 'help' | 'browser'
-  | 'transcript' | 'composer'
+  | 'completion' | 'transcript-screen' | 'transcript' | 'composer'
 
 export type UiAction =
   // Global
@@ -79,6 +79,17 @@ export type UiAction =
   | { readonly kind: 'scroll'; readonly direction: -1 | 1; readonly page: boolean }
   | { readonly kind: 'toggle-fold' }
   | { readonly kind: 'open-editor' }
+  | { readonly kind: 'transcript-open' }
+  | { readonly kind: 'transcript-close' }
+  | { readonly kind: 'transcript-move'; readonly delta: number }
+  | { readonly kind: 'transcript-search-open' }
+  | { readonly kind: 'transcript-search-type'; readonly text: string }
+  | { readonly kind: 'transcript-search-backspace' }
+  | { readonly kind: 'transcript-search-commit' }
+  | { readonly kind: 'transcript-search-cancel' }
+  | { readonly kind: 'transcript-match'; readonly direction: -1 | 1 }
+  | { readonly kind: 'transcript-copy'; readonly wholeEntry: boolean }
+  | { readonly kind: 'transcript-restore-draft' }
   // Draft completion
   | { readonly kind: 'completion-accept' }
   | { readonly kind: 'completion-move'; readonly delta: -1 | 1 }
@@ -111,6 +122,7 @@ export interface KeyContext {
   readonly completionOpen: boolean
   /** The token already spells the selected candidate, so accepting is a no-op. */
   readonly completionExact: boolean
+  readonly transcriptSearch?: boolean
 }
 
 /** True when this press means "commit", including a bare CR/LF chunk. */
@@ -138,7 +150,7 @@ function isPrintable(key: KeyEvent): boolean {
  * key it does not understand fall through to the composer.
  */
 export function resolveKey(
-  surface: UiSurface,
+  active: UiSurface | readonly UiSurface[],
   key: KeyEvent,
   context: KeyContext,
   keys: Keymap = DEFAULT_KEYMAP,
@@ -149,16 +161,67 @@ export function resolveKey(
     return context.cancelArmed ? { kind: 'cancel' } : { kind: 'cancel-arm' }
   }
 
+  const surfaces = typeof active === 'string' ? [active] : active
+  for (const surface of surfaces) {
+    const resolved = surfaceKey(surface, key, context, keys)
+    if (resolved === 'pass') continue
+    return resolved === 'swallow' ? undefined : resolved
+  }
+  return undefined
+}
+
+type SurfaceResolution = UiAction | 'pass' | 'swallow'
+
+function surfaceKey(
+  surface: UiSurface,
+  key: KeyEvent,
+  context: KeyContext,
+  keys: Keymap,
+): SurfaceResolution {
   switch (surface) {
-    case 'approval': return approvalKey(key, context, keys)
-    case 'approval-feedback': return approvalFeedbackKey(key, keys)
-    case 'question': return questionKey(key, context, keys)
-    case 'palette': return paletteKey(key, keys)
+    case 'approval': return approvalKey(key, context, keys) ?? 'swallow'
+    case 'approval-feedback': return approvalFeedbackKey(key, keys) ?? 'swallow'
+    case 'question': return questionKey(key, context, keys) ?? 'swallow'
+    case 'palette': return paletteKey(key, keys) ?? 'swallow'
     // Any key dismisses the help sheet; it is a reference card, not a mode.
     case 'help': return { kind: 'close-help' }
-    case 'browser': return browserKey(key, keys)
-    default: return openKey(surface, key, context, keys)
+    case 'browser': return browserKey(key, keys) ?? 'swallow'
+    case 'completion': return completionKey(key, context, keys)
+    case 'transcript-screen': return transcriptScreenKey(key, context, keys)
+    default: return openKey(surface, key, context, keys) ?? 'pass'
   }
+}
+
+function transcriptScreenKey(key: KeyEvent, context: KeyContext, keys: Keymap): SurfaceResolution {
+  if (context.transcriptSearch) {
+    if (keys.bound('transcript:search-cancel', key)) return { kind: 'transcript-search-cancel' }
+    if (keys.bound('transcript:search-commit', key) && isReturn(key)) return { kind: 'transcript-search-commit' }
+    if (key.name === 'backspace' || key.name === 'delete') return { kind: 'transcript-search-backspace' }
+    if (isPrintable(key)) return { kind: 'transcript-search-type', text: key.input }
+    return 'swallow'
+  }
+  if (keys.bound('transcript:close', key)) return { kind: 'transcript-close' }
+  if (keys.bound('transcript:search', key)) return { kind: 'transcript-search-open' }
+  if (key.input === 'N') return { kind: 'transcript-match', direction: -1 }
+  if (keys.bound('transcript:next-match', key)) return { kind: 'transcript-match', direction: 1 }
+  if (key.input === 'Y') return { kind: 'transcript-copy', wholeEntry: true }
+  if (keys.bound('transcript:copy-line', key)) return { kind: 'transcript-copy', wholeEntry: false }
+  if (keys.bound('transcript:restore-draft', key)) return { kind: 'transcript-restore-draft' }
+  if (keys.bound('transcript:up', key)) return { kind: 'transcript-move', delta: -1 }
+  if (keys.bound('transcript:down', key)) return { kind: 'transcript-move', delta: 1 }
+  if (keys.bound('transcript:page-up', key)) return { kind: 'transcript-move', delta: -10 }
+  if (keys.bound('transcript:page-down', key)) return { kind: 'transcript-move', delta: 10 }
+  return 'swallow'
+}
+
+function completionKey(key: KeyEvent, context: KeyContext, keys: Keymap): SurfaceResolution {
+  if (!context.completionOpen) return 'pass'
+  if (keys.bound('completion:accept', key)) return { kind: 'completion-accept' }
+  if (isReturn(key) && !context.completionExact) return { kind: 'completion-accept' }
+  if (keys.bound('history:previous', key)) return { kind: 'completion-move', delta: -1 }
+  if (keys.bound('history:next', key)) return { kind: 'completion-move', delta: 1 }
+  if (keys.bound('app:escape', key)) return { kind: 'completion-dismiss' }
+  return 'pass'
 }
 
 function approvalKey(key: KeyEvent, context: KeyContext, keys: Keymap): UiAction | undefined {
@@ -255,22 +318,6 @@ function openKey(
     return context.interactive ? { kind: 'open-picker' } : undefined
   }
 
-  // An open completion list owns Tab, the vertical keys and Esc; it is the
-  // innermost layer, so it is also the first one Esc peels off. This is the
-  // context stack in the one place the profile actually has one: the same
-  // chords mean different things depending on which layer is showing, and the
-  // innermost layer is asked first.
-  if (surface === 'composer' && context.completionOpen) {
-    if (keys.bound('completion:accept', key)) return { kind: 'completion-accept' }
-    // Enter accepts only while there is something left to complete. Once the
-    // token already spells the candidate, Enter must send — otherwise typing a
-    // whole command name would need two presses to run it.
-    if (isReturn(key) && !context.completionExact) return { kind: 'completion-accept' }
-    if (keys.bound('history:previous', key)) return { kind: 'completion-move', delta: -1 }
-    if (keys.bound('history:next', key)) return { kind: 'completion-move', delta: 1 }
-    if (keys.bound('app:escape', key)) return { kind: 'completion-dismiss' }
-  }
-
   // The mode cycle must be tested before plain Tab: a backtab parses as
   // tab+shift, so the more specific chord has to be offered the press first.
   if (keys.bound('permission:cycle', key)) return { kind: 'cycle-mode' }
@@ -296,6 +343,7 @@ function openKey(
   }
   if (keys.bound('fold:toggle', key)) return { kind: 'toggle-fold' }
   if (keys.bound('editor:open', key)) return { kind: 'open-editor' }
+  if (keys.bound('transcript:open', key)) return { kind: 'transcript-open' }
   if (keys.bound('scroll:page-up', key)) return { kind: 'scroll', direction: -1, page: true }
   if (keys.bound('scroll:page-down', key)) return { kind: 'scroll', direction: 1, page: true }
 
@@ -337,6 +385,79 @@ function openKey(
   if (keys.bound('chat:submit', key) && isReturn(key)) return { kind: 'submit' }
   if (isPrintable(key)) return { kind: 'composer-insert', text: key.input }
   return undefined
+}
+
+export interface KeySequenceState {
+  readonly prefix: readonly string[]
+  readonly startedAt: number
+}
+
+export const emptyKeySequence: KeySequenceState = Object.freeze({ prefix: [], startedAt: 0 })
+export const KEY_SEQUENCE_TIMEOUT_MS = 1_000
+
+export interface KeySequenceResolution {
+  readonly state: KeySequenceState
+  readonly action?: UiAction
+  readonly pending: boolean
+}
+
+function settledSequence(action: UiAction | undefined): KeySequenceResolution {
+  return {
+    state: emptyKeySequence,
+    pending: false,
+    ...(action === undefined ? {} : { action }),
+  }
+}
+
+/** Resolve a single press or advance a user-configured multi-key chord. */
+export function resolveKeySequence(
+  previous: KeySequenceState,
+  active: UiSurface | readonly UiSurface[],
+  key: KeyEvent,
+  context: KeyContext,
+  keys: Keymap = DEFAULT_KEYMAP,
+  now = Date.now(),
+): KeySequenceResolution {
+  const press = keys.chord(key)
+  if (press === undefined) {
+    return settledSequence(resolveKey(active, key, context, keys))
+  }
+  const retained = previous.prefix.length > 0
+    && now - previous.startedAt <= KEY_SEQUENCE_TIMEOUT_MS
+    ? previous.prefix
+    : []
+  const sequence = [...retained, press]
+  const surfaces = typeof active === 'string' ? [active] : active
+  const scopes = new Set<UiSurface | 'global'>([...surfaces, 'global'])
+  const exact = new Set<string>()
+  let longer = false
+  for (const binding of keys.bindings()) {
+    if (!scopes.has(binding.surface)) continue
+    for (const chord of binding.chords) {
+      const parts = chord.split(' ')
+      if (!sequence.every((part, index) => parts[index] === part)) continue
+      if (parts.length === sequence.length) exact.add(binding.action)
+      else if (parts.length > sequence.length) longer = true
+    }
+  }
+  if (longer && exact.size === 0) {
+    return {
+      state: { prefix: sequence, startedAt: retained.length === 0 ? now : previous.startedAt },
+      pending: true,
+    }
+  }
+  if (exact.size > 0 && sequence.length > 1) {
+    const forced: Keymap = {
+      bound: action => exact.has(action),
+      chord: event => keys.chord(event),
+      shortcut: action => keys.shortcut(action),
+      bindings: () => keys.bindings(),
+    }
+    return settledSequence(resolveKey(active, key, context, forced))
+  }
+  // A failed/expired prefix is swallowed, but the current press is replayed as
+  // a normal key so `ctrl+x z` still types `z`.
+  return settledSequence(resolveKey(active, key, context, keys))
 }
 
 /** The structural shape of Ink's key record; typed here to keep Ink out of the core. */

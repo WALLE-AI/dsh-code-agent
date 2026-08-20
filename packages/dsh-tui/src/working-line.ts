@@ -62,15 +62,30 @@ export interface WorkingLineInput {
   readonly silentMs?: number
   /** A tool is in flight, so silence is the tool working rather than a stall. */
   readonly toolRunning?: boolean
+  /** Active child agent, rendered on a bounded tree row below the main line. */
+  readonly subagent?: string
+  /** Capability-aware tree prefix. */
+  readonly treePrefix?: string
 }
 
 export interface WorkingLine {
   readonly text: string
+  readonly subagentText?: string
   /**
    * The run has gone quiet for longer than {@link STALL_AFTER_MS}. The view
    * paints the row in a warning tone; the wait itself is unchanged.
    */
   readonly stalled: boolean
+}
+
+/** Move a displayed count toward the projection without overshoot or jumps. */
+export function nextDisplayedTokenCount(previous: number, target: number, dtMs: number): number {
+  const from = Math.max(0, Math.floor(previous))
+  const to = Math.max(0, Math.floor(target))
+  if (from === to) return to
+  const distance = Math.abs(to - from)
+  const step = Math.max(1, Math.ceil(distance * Math.min(1, Math.max(0, dtMs) / 500)))
+  return from < to ? Math.min(to, from + step) : Math.max(to, from - step)
 }
 
 function compactTokens(value: number): string {
@@ -110,5 +125,11 @@ export function buildWorkingLine(input: WorkingLineInput, columns: number): Work
     if (displayWidth(next) > columns) break
     text = next
   }
-  return { text: truncateToWidth(text, columns), stalled }
+  const subagentText = input.subagent === undefined
+    ? undefined
+    : truncateToWidth(`${input.treePrefix ?? '└─'} ${input.subagent}`, columns)
+  return {
+    text: truncateToWidth(text, columns), stalled,
+    ...(subagentText === undefined || subagentText === '' ? {} : { subagentText }),
+  }
 }

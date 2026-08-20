@@ -8,18 +8,23 @@
 
 ## 0. 结论先行
 
-dsh-tui 的**内核质量很高**：纯函数键位解析器、优先级降级的状态行、`Static` 滚动回填、差分帧绘制、投影缓存 —— 这些设计在 claude-code 里要么没有对等物，要么是靠一个 fork 版 Ink 才做到的。所以本方案**不是"重写成 claude-code"**，而是识别出 claude-code 用 5 万行换来的、dsh 用 8 千行没覆盖到的**六个真实能力缺口**，并给出可增量落地的路径。
+dsh-tui 的**内核质量很高**：纯函数键位解析器、优先级降级的状态行、`Static` 滚动回填、差分帧绘制、投影缓存 —— 这些设计在 claude-code 里要么没有对等物，要么是靠一个 fork 版 Ink 才做到的。所以本方案**不是"重写成 claude-code"**，而是跟踪原始六个能力缺口及新增的启动缺口，并按当前代码重新划分剩余工作。
 
-六个缺口按投入产出排序：
+当前状态按投入产出排序：
 
-| # | 缺口 | 现状 | 对标实现 | 优先级 |
+| # | 能力 | 2026-08-20 现状 | 对标实现 | 优先级 |
 |---|---|---|---|---|
-| 1 | **消息折叠/分组流水线**（渐进披露） | 只有单卡片 fold | `collapseReadSearchGroups` + `groupToolUses` 等 5 级 | **P0** |
-| 2 | **审批档位过窄**（只有 allow-once / reject） | 2 档 | accept-once / accept-session / 作用域 / 附反馈 | **P0** |
-| 3 | **通知队列**（当前只有单条 `notice` 字符串） | 单槽位 | 优先级 + fold + invalidate 队列 | **P0** |
-| 4 | **键位不可配置、无 context 栈、无和弦** | 静态表 | `keybindings/` 14 文件，用户可覆盖 | P1 |
-| 5 | **历史区不可检索/不可选中复制/不可重绕** | 交给终端 scrollback | transcript mode + `/`搜索 + rewind + 鼠标选区 | P1 |
-| 6 | **等待反馈信息密度低** | 一行 working line | 分层 spinner（stalled/thinking/token 动画/子 agent 树） | P2 |
+| 0 | **目录确认 + 无参数交互启动** | 未实现 | workspace trust + 空首轮 REPL | **P0** |
+| 1 | **消息折叠/分组流水线** | 已完成首批规则 | `collapseReadSearchGroups` + `groupToolUses` 等 5 级 | 已完成 |
+| 2 | **审批档位与反馈** | 已按 Harness 能力完成 | accept-once / preset 切换 / 附反馈 | 已完成 |
+| 3 | **通知队列** | 已完成 | 优先级 + fold + invalidate 队列 | 已完成 |
+| 4 | **键位 context 栈与和弦** | 唯一真源、用户配置已完成；栈/和弦未完成 | `keybindings/` 14 文件 | P1 |
+| 5 | **历史区检索/复制/重绕** | 未完成 | transcript mode + `/`搜索 + rewind | P1 |
+| 6 | **等待反馈与工具意图** | stalled、宽度门控、activity 已完成；其余未完成 | thinking/token 动画/子 agent 树 | P2 |
+
+> **范围补充（2026-08-20）**：启动链路还缺一个比上述 TUI 内部能力更靠前的边界：
+> `dshcodecli` 无参数时不能直接进入交互 composer，且在首次使用某个目录前没有工作目录确认。
+> 该项作为 **P0-0** 纳入本方案，必须先于其余未完成项实施。
 
 ---
 
@@ -150,7 +155,7 @@ extractSearchText           // 供 transcript 全文检索索引（有专门的 
 
 ### 1.9 导航与检索
 
-- **Transcript mode**（`ctrl+o`）：整屏接管 + `/` 搜索栏 + `n`/`N` 跳转 + 匹配计数徽章 + 屏幕缓冲级高亮（`ink/searchHighlight.ts`）。
+- **Transcript mode**（实际采用 `ctrl+t`，因为 `ctrl+o` 已用于卡片折叠）：整屏接管 + `/` 搜索栏 + `n`/`N` 跳转 + 匹配计数徽章 + 屏幕缓冲级高亮（`ink/searchHighlight.ts`）。
 - **MessageSelector**（rewind）：选一条 user message，可"恢复代码"（`fileHistoryRewind`）、"从此处摘要"（`partialCompactConversation`，支持 `from` / `up_to` 两个方向）、"恢复消息"。
 - **MessageActions**：光标在消息间移动（`j/k`、`shift+↑↓` 跳 user message），对单条消息执行操作。
 - `QuickOpenDialog` / `GlobalSearchDialog`（`ctrl+shift+p` / `ctrl+shift+f`）。
@@ -201,6 +206,90 @@ extractSearchText           // 供 transcript 全文检索索引（有专门的 
 ---
 
 ## 3. 优化方案
+
+### P0-0　工作目录确认 + 无参数直接进入交互
+
+#### 目标交互
+
+直接执行：
+
+```bash
+dshcodecli
+```
+
+在当前目录尚未确认时，先显示一个与 claude-code `TrustDialog` 同构的选择界面：
+
+```text
+Accessing workspace:
+
+/absolute/path/to/project
+
+Quick safety check: Is this a project you created or one you trust?
+DSH Code Agent will be able to read, edit, and execute files here.
+
+> Yes, use this folder
+  No, exit
+
+Enter to confirm · Esc to cancel
+```
+
+确认后直接显示 splash + 空 composer，等待用户输入第一条消息。**不得**为了启动会话发送
+`"你是谁"`、空格或任何其他占位 prompt，也不得在用户提交前产生 LLM 请求。
+
+兼容性约束：
+
+- `dshcodecli "修复这个问题"` 继续保持一次性任务语义；显式 `-i/--interactive` 继续兼容。
+- `dshcodecli --resume [id]`、`--help`、`--version` 的现有语义不变；help/version 不弹目录确认。
+- 无参数仅在 stdin/stdout 都是 TTY 时进入交互；重定向 IO 时给出明确错误，不静默挂起。
+- `No` 退出且不启动 Harness；`Esc` 与 `Ctrl+C` 走取消/有界退出，不把按键传给后续 TUI。
+
+#### 安全边界
+
+目录确认必须位于 launcher，而不是 Agent 已创建后的 React view。当前 `launch.mjs` 会在 spawn
+之前沿 cwd 及其父目录读取 `.env`；因此正确顺序是：
+
+```text
+解析 --help/--version
+  → 解析并规范化 cwd（realpath）
+  → 检查/展示 workspace 确认
+  → 读取项目 .env、准备运行环境
+  → spawn Harness
+  → 创建空 session
+  → 挂载 interactive composer
+  → 用户首次提交后才 followup / 发起模型请求
+```
+
+未经确认，不读取 cwd 内的 `.env`、项目配置、技能、hook、MCP 配置，也不创建 Agent。这样该弹窗
+才是工作区信任边界，而不只是一个已经太晚的视觉提示。
+
+确认记录建议写入 `$DSH_HOME/tui/trusted-workspaces.json`，key 使用 `realpath(cwd)` 后的绝对路径，
+避免同一目录通过符号链接重复确认。写入采用临时文件 + rename，文件权限限制为当前用户；损坏、
+不可读或版本不兼容的记录一律按“未确认”处理。与 claude-code 一致，home 目录只做本次会话确认，
+不把整个 home 永久标记为可信。已经确认的普通目录走 fast path，不重复弹窗。
+
+#### 代码落点
+
+1. `packages/dsh-tui/bin/workspace-trust.mjs`（新增）：信任记录读写、目录规范化、选择器状态机和
+   最小 ANSI 渲染；保持 plain ESM，保证安装包启动不依赖 TypeScript loader。
+2. `packages/dsh-tui/bin/launch.mjs`：在 `envSearchPath/loadEnvFile` 和 child spawn 之前执行 preflight；
+   空 argv 原样交给 startup，不在 launcher 注入伪任务。
+3. `packages/dsh-tui/src/startup.ts`：允许“无 task、无 resume”，并把该形态归一化为
+   `{ task: '', interactive: true }`；有 task 时仍按原默认保持 one-shot。
+4. `packages/dsh-tui/src/plugin.ts` / `harness-adapter.ts`：沿用已经存在的 optional first task 路径；
+   `task.trim() === ''` 时只建立交互控制器，不调用 `controller.followup()`。增加断言测试，防止以后
+   又通过占位消息启动。
+5. shell completion、`--help` 和 `docs/tui-user-guide.md`：把无参数启动写成主路径，`-i` 标为兼容的
+   显式覆盖，而不是必需步骤。
+
+#### 验收
+
+- 新目录首次执行 `dshcodecli`：先看到绝对路径与 Yes/No；选择 Yes 后进入空 composer。
+- 选择 No：Harness/LLM 请求数均为 0，项目 `.env` 读取数为 0，退出码明确。
+- 同一路径第二次启动不再询问；符号链接路径与真实路径共用一条确认记录。
+- 未提交消息前 LLM 请求数严格为 0；提交第一条消息后只发送该消息一次。
+- PTY smoke 覆盖 40x12、80x24、无颜色和 ASCII-only；提示文本不溢出、不与选项重叠。
+- 单元测试覆盖空 argv、one-shot、`-i`、resume、损坏记录、拒绝、Esc/Ctrl+C、原子写失败。
+- 完整门禁：`pnpm run check`、packed-install smoke 和 installed-mode CLI smoke 全绿。
 
 ### P0-1　消息折叠流水线（渐进披露）
 
@@ -331,6 +420,11 @@ export function tickNotices(q: NoticeQueue, now: number): NoticeQueue
 
 ### P1-4　键位系统：context 栈 + 用户配置 + 显示同源
 
+**执行状态（2026-08-20）**：4a“显示与实现同源”和 4c 中的单键用户配置已经完成：
+`keybindings.ts` 已是唯一真源，`$DSH_HOME/keybindings.json` 已支持校验、保留键保护、冲突提示，
+帮助文案也从同一表生成。尚未完成的是 **4b context 栈** 与 **多键和弦状态机**。下列原始分步
+说明保留作设计依据，执行时只实施未完成部分。
+
 **分三步，不要一次做完**：
 
 **4a. 显示同源（低成本，先做）**
@@ -396,13 +490,13 @@ export function shortcutFor(action: string, surface: UiSurface | 'global'): stri
 **架构抉择：不要放弃 `Static` scrollback，改为"双模式"**
 
 - **默认（scrollback 模式）**：现状不变。滚轮属于终端、零兼容负担、`frame-writer` 差分绘制。
-- **`ctrl+o` transcript 模式**：进入 alt-screen，接管整屏，此时 dsh **自己拥有全部行**，可以做检索、选区、重绕。退出 alt-screen 时终端自动还原原 scrollback，**用户的历史一行都不会丢** —— 这是 alt-screen 的天然属性，也正是这个方案成立的原因。
+- **`ctrl+t` transcript 模式**：进入 alt-screen，接管整屏，此时 dsh **自己拥有全部行**，可以做检索、复制和草稿恢复。`ctrl+o` 保留为既有卡片折叠键。退出 alt-screen 时终端自动还原原 scrollback，**用户的历史一行都不会丢** —— 这是 alt-screen 的天然属性，也正是这个方案成立的原因。
 
 这样既不用 fork Ink（transcript 模式下行数已经由 dsh 自己分页，不需要虚拟滚动的 Yoga 级优化），也拿到了 90% 的能力。
 
 **分三期**：
 
-- **6a. transcript 模式骨架**：`terminal-capabilities.ts` 已有 `alternateScreen` 探测；进入时写 `\x1b[?1049h`，退出写 `\x1b[?1049l`；复用 `viewport.ts` 的分页逻辑（已存在），复用 `overlay.ts` 的窗口模型。`Esc`/`q`/`ctrl+o` 退出。
+- **6a. transcript 模式骨架**：`terminal-capabilities.ts` 已有 `alternateScreen` 探测；进入时写 `\x1b[?1049h`，退出写 `\x1b[?1049l`；复用 `viewport.ts` 的分页逻辑（已存在），复用 `overlay.ts` 的窗口模型。`Esc`/`q`/`ctrl+t` 退出。
 - **6b. `/` 检索**：`transcript-view.ts` 的 `TranscriptLine.text` 已经是纯文本 —— 直接在行数组上 `indexOf`，`n`/`N` 跳转，匹配行加 `segments` 高亮（`StyledSegment` 已支持 `background`）。计数徽章放页脚。**不需要 claude-code 的 `extractSearchText` 契约**，因为 dsh 的卡片本来就是先转成文本行再渲染的 —— 这是 dsh 数据意图架构的红利。
 - **6c. 重绕（rewind）**：`↑↓` 选中一条 user 消息，Enter 提供"从此处重来"。依赖 Harness 侧的 session fork 能力，若暂不具备则只做"复制该消息到草稿"。
 
@@ -411,6 +505,9 @@ export function shortcutFor(action: string, surface: UiSurface | 'global'): stri
 ---
 
 ### P2-7　等待反馈分层
+
+**执行状态（2026-08-20）**：已完成。除既有 stalled 判定、宽度降级和工具 activity 外，现已加入
+reasoning/thinking 阶段提示、纯函数 token 缓动和参与终端行预算的子 agent 树状行。
 
 按价值排序，逐条加进 `working-line.ts`（保持纯函数 + 宽度门控风格）：
 
@@ -426,8 +523,9 @@ export function shortcutFor(action: string, surface: UiSurface | 'global'): stri
 
 ### P2-8　工具意图表达力扩展
 
-**执行状态（2026-08-20）**：`activity` 的声明、传播与 working line 消费已完成；
-`summary`、`condensed`、`truncated` 尚未实施。
+**执行状态（2026-08-20）**：`activity` 的声明、传播与 working line 消费已完成；内置 search/web
+卡已经能显示其原始结果里的 `truncated` 状态，但通用 `ToolRenderIntent` 契约仍没有统一的
+`summary`、`condensed`、`truncated` 字段。执行时只补齐这三个通用意图和对应降级测试。
 
 在 `ToolRenderIntent` 上加四个可选字段，全部向后兼容（缺失即当前行为）：
 
@@ -463,20 +561,54 @@ interface ToolRenderIntent {
 
 ---
 
-## 5. 里程碑
+## 5. 合并后的执行里程碑
 
-**执行状态（2026-08-19）**：M1–M3 已完成并合入，测试从 447 增至 505，
-`check:interactive`（4 个场景）、`check:soak:quick`、`check:cli`、`check:resume`、
-`check:cancel`、`check:profile`、`check:bench` 全部通过。M4–M6 未开始。
+**执行记录（2026-08-20）**：M1–M3 和 M4 的既有部分是本轮基线；下表是本轮合并执行范围及
+最终状态。所有实现项均已完成，M7 根据 Harness 的公开能力走了明确的草稿恢复降级路径。
 
-| 阶段 | 内容 | 预估 | 验收门槛 |
-|---|---|---|---|
-| **M1** ✅ | P1-5 `app.tsx` 分解 + `src/ui/` 最小设计系统 | 1 周 | 达成：447 测试全绿，`app.tsx` 888 → 247 行 |
-| **M2** ✅ | P0-1 折叠流水线 · P0-3 通知队列 | 1.5 周 | 达成：9 次只读调用 ≤ 3 行；idle 队列为空时无 timer |
-| **M3** ✅ | P0-2 审批档位 + 反馈输入 | 1 周 | 达成：Esc 两级语义有端到端测试；档位范围见上文修正 |
-| **M4** | P1-4a/4b 键位真源 + context 栈 | 1 周 | 帮助面板由绑定表生成 |
-| **M5** | P1-6a/6b transcript 模式 + `/` 检索 | 1.5 周 | 退出 alt-screen 后原 scrollback 完整 |
-| **M6** | P2-7 等待反馈 · P2-8 意图扩展 · P1-4c 用户键位配置 | 1 周 | 窄终端（40 列）无换行溢出 |
+| 阶段 | 状态 | 内容 | 预估 | 验收门槛 |
+|---|---|---|---|---|
+| **M0** | 已完成 | P0-0 目录确认 + 无参数交互启动 | - | PTY 覆盖首次确认、持久信任、拒绝和空任务启动 |
+| **M4R** | 已完成 | P1-4b context 栈 + 多键和弦；保留现有用户配置 | - | 内层 surface 消费/阻断；和弦超时恢复；保留键不可覆盖 |
+| **M5A** | 已完成 | P1-6a transcript alt-screen 骨架 | - | 进入/退出恢复 scrollback；inline 能力降级可用 |
+| **M5B** | 已完成 | P1-6b `/` 检索 + `n/N` 跳转 + `y/Y` 复制 | - | 搜索高亮/循环跳转；OSC 52 不可用时显示复制内容 |
+| **M6A** | 已完成 | P2-7：thinking、token 缓动、子 agent 树 | - | idle 无新增 timer；树行参与预算；工具运行不误报 stalled |
+| **M6B** | 已完成 | P2-8：统一 `summary/condensed/truncated` 意图 | - | 新字段统一消毒；未声明字段的工具保持原渲染 |
+| **M7** | 已完成（降级） | P1-6c 能力核查 + 历史用户输入恢复到草稿 | - | Harness 无公开 fork/rewind API；明确不宣称已回滚文件或会话 |
+
+### 5.1 实际执行顺序
+
+1. **M0**：它改变 startup contract 和端到端启动方式，后续所有 PTY 用例都以
+   `dshcodecli` 无参数启动作为基线。
+2. **M4R**：transcript 搜索会新增 `/`、`n/N`、`y/Y` 和模式切换，先有 context 栈与和弦
+   状态机，避免再次把优先级硬编码进 `app.tsx`。
+3. **M5A/M5B**：先证明 alt-screen 生命周期可靠，再加检索和复制；两阶段之间保留独立
+   回滚点。
+4. **M6A/M6B**：等待反馈使用工具意图，二者共享契约测试，便于定位渲染
+   性能或兼容性回归。
+5. **M7**：已核实 Harness 没有公开的 session fork/file rewind 能力，因此实现 `r` 恢复历史用户
+   输入到草稿，不跨层私接内部 API，也不伪造回滚成功状态。
+
+### 5.2 提交与验证策略
+
+每个里程碑按“纯函数/契约 → view/launcher 接线 → PTY smoke → 文档”拆成可独立审查的提交。
+M0 至少拆为：workspace trust 状态机与存储、startup 空任务语义、launcher 接线、PTY/installed
+smoke 四个提交。任何阶段失败时只回退该阶段，不触碰 M1–M3 已稳定的折叠、审批和通知代码。
+
+每阶段运行对应单元测试和 targeted smoke；合并前统一运行：
+
+```bash
+pnpm run check
+```
+
+涉及 launcher/package 的 M0 额外执行 packed-install、installed mode 和 Node 22/24 runtime matrix；
+涉及 alt-screen 的 M5 额外做 SIGINT、SIGTERM、stdin EOF、异常抛出四种终端恢复测试。
+
+**本次执行结果（2026-08-20）**：`npm run check` 与 Node 24.18.0 runtime matrix 全部通过；包括
+569 项单元/交互测试、workspace trust PTY、四种交互尺寸/能力、resume、cancel、packed install、性能
+预算和 10 秒 soak。锁定的 Node 22.23.2 因执行环境无法解析 npm registry 而未能下载；本机仅有、且
+低于项目最低要求的 Node 22.12.0，其 569 项单测通过，但 Harness 交互启动因该版本没有
+`node:zlib.createZstdDecompress` 而失败。该项是环境矩阵缺口，不是本次实现失败。
 
 **贯穿性约束**（每个阶段都要守住的、dsh 现有的好性质）：
 

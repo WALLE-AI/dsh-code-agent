@@ -137,6 +137,15 @@ describe('layout budget', () => {
   })
 })
 
+describe('running phase', () => {
+  it('names an active reasoning phase explicitly', () => {
+    const store = interactiveStore()
+    store.setStatus('running')
+    store.append({ seq: 1, kind: 'reasoning-delta', text: 'checking assumptions' })
+    expect(model(store).workingLine?.text).toContain('Thinking')
+  })
+})
+
 describe('status row', () => {
   it('says what Esc does while a run is in flight', () => {
     const store = interactiveStore()

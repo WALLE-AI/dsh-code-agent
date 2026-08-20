@@ -96,11 +96,15 @@ export interface ViewModelInput {
   readonly now: number
   /** Off for a terminal that cannot animate, and for deterministic tests. */
   readonly animate: boolean
+  /** Smoothed output-token value maintained by the React wiring. */
+  readonly displayedTokens?: number
 }
 
 export interface ViewModel {
   // --- modal precedence -------------------------------------------------
   readonly surface: UiSurface
+  /** Keyboard owners from the innermost transient layer to the outer view. */
+  readonly surfaces: readonly UiSurface[]
   readonly modalFree: boolean
   readonly browserOpen: boolean
   readonly helpVisible: boolean
@@ -340,6 +344,7 @@ export function buildViewModel(input: ViewModelInput): ViewModel {
     error: state.error !== undefined,
     todoRows: todoPanelRows(state.activity),
     working: running,
+    workingRows: state.activity.subagent === undefined ? 1 : 2,
     contextBar: status.bar !== undefined,
   })
   // A call in flight is the better subject than any verb this profile could
@@ -349,19 +354,24 @@ export function buildViewModel(input: ViewModelInput): ViewModel {
     .find(entry => entry.nodeKind === 'tool' && entry.status === 'pending')
   const toolRunning = runningCard !== undefined
   // The glyph and its space are one cell each and sit at the head of the row.
+  const latestEntry = state.entries.at(-1)
   const activity = runningCard === undefined
-    ? undefined
-    : runningCard.activity ?? runningCard.header.slice(2)
+    ? latestEntry?.tone === 'reasoning' ? 'Thinking…' : undefined
+    : runningCard.activity ?? runningCard.summary ?? runningCard.header.slice(2)
   // While the Agent is working, one line above the composer says so.
   const workingLine = !running || !layout.showWorking ? undefined : buildWorkingLine({
     frame: animate ? spinnerFrame(now) : glyphs.pending,
     turn: state.turn.index,
     elapsedMs: state.turn.startedAtMs === 0 ? 0 : now - state.turn.startedAtMs,
-    ...(state.activity.tokens === undefined ? {} : { tokens: state.activity.tokens.output }),
+    ...(state.activity.tokens === undefined ? {} : {
+      tokens: input.displayedTokens ?? state.activity.tokens.output,
+    }),
     separator: glyphs.marker,
     ...(activity === undefined || activity === '' ? {} : { activity }),
     ...(state.outputAtMs === 0 ? {} : { silentMs: Math.max(0, now - state.outputAtMs) }),
     toolRunning,
+    ...(state.activity.subagent === undefined ? {} : { subagent: state.activity.subagent }),
+    treePrefix: animate ? '└─' : '\\-',
   }, columns)
   const todoPanel = buildTodoPanel(
     state.activity, columns, layout.todoRows,
@@ -449,8 +459,12 @@ export function buildViewModel(input: ViewModelInput): ViewModel {
     ? renderContextBar(status.bar.used, status.bar.total, columns)
     : undefined
 
+  const surfaces: readonly UiSurface[] = surface === 'composer' && completionOpen
+    ? ['completion', 'composer']
+    : [surface]
   return {
     surface,
+    surfaces,
     modalFree,
     browserOpen,
     helpVisible,
@@ -551,6 +565,7 @@ export function keyContextOf(
   canMoveDown: boolean
   completionOpen: boolean
   completionExact: boolean
+  transcriptSearch: boolean
 } {
   const line = caretLine(ui.composer)
   return {
@@ -563,5 +578,6 @@ export function keyContextOf(
     canMoveDown: line.index < line.count - 1,
     completionOpen: vm.completionOpen,
     completionExact: vm.completionExact,
+    transcriptSearch: false,
   }
 }

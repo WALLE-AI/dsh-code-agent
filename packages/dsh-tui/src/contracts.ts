@@ -141,8 +141,17 @@ export interface QuestionPrompt {
 
 export interface ToolRenderIntent {
   readonly card: string
+  /** One-line tool-owned summary for folded cards and running status. */
+  readonly summary?: string
   /** Present-tense description shown while the call is running. */
   readonly activity?: string
+  /** A deliberately smaller representation used when the inline body is capped. */
+  readonly condensed?: {
+    readonly title?: string
+    readonly body?: readonly { readonly text: string; readonly tone?: RowTone }[]
+  }
+  /** The producer omitted result data even if the local row budget did not. */
+  readonly truncated?: boolean
   readonly [key: string]: unknown
 }
 
@@ -213,4 +222,12 @@ export interface TuiActions {
 
 export interface TuiView {
   unmount(): void
+}
+
+export interface TuiScreenController {
+  /** Enter a dedicated transcript screen; false means inline fallback. */
+  enter(): boolean
+  exit(): void
+  /** Copy through OSC 52 when the terminal path permits it. */
+  copy(text: string): boolean
 }

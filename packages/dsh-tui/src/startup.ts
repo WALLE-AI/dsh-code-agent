@@ -82,9 +82,6 @@ interface RawOptions {
  */
 export function startupValues(parts: readonly string[], options: RawOptions): TuiStartupValues {
   const task = parts.join(' ')
-  if (task.trim() === '' && options.resume === undefined) {
-    throw new Error('a task is required unless --resume selects an existing session')
-  }
   const resume = options.resume === undefined
     ? undefined
     : options.resume === true || String(options.resume).trim() === ''
@@ -99,7 +96,9 @@ export function startupValues(parts: readonly string[], options: RawOptions): Tu
     ...(options.model === undefined ? {} : { model: parseModelSelection(options.model) }),
     ...(options.diagnosticLog === undefined ? {} : { diagnosticLog: options.diagnosticLog }),
     alternateScreen: options.alternateScreen,
-    interactive: options.interactive,
+    // No arguments is the primary REPL entry. A supplied task remains one-shot
+    // unless the caller explicitly asks to keep the session open.
+    interactive: options.interactive || (task.trim() === '' && resume === undefined),
     color: options.color,
   }
 }

@@ -26,12 +26,15 @@ export interface ToolCardView {
    * fallback, so a tool that says nothing here still describes itself.
    */
   readonly activity?: string
+  readonly summary?: string
   readonly subtitle?: string
   readonly badge?: string
   readonly status: ToolNode['status']
   readonly body: readonly DetailLine[]
   /** Body rows the inline budget dropped; zero means the card is complete. */
   readonly dropped: number
+  /** The producer or the local card budget omitted result data. */
+  readonly truncated?: boolean
   /** Line statistics for diff cards, so the status line can total file churn. */
   readonly diffStats?: { readonly added: number; readonly removed: number }
   readonly locations: readonly ToolCardLocation[]
@@ -46,6 +49,12 @@ export interface ToolCardOptions {
 }
 
 const DEFAULTS = { maxBodyLines: 200, maxInlineBytes: 256 * 1024, titleColumns: 160 } as const
+const ROW_TONES = new Set<RowTone>([
+  'user', 'assistant', 'reasoning', 'system', 'tool', 'error',
+  'diff-add', 'diff-remove', 'diff-hunk', 'code', 'heading', 'quote', 'bullet',
+  'badge', 'warning', 'tool-terminal', 'tool-diff', 'tool-search', 'tool-read',
+  'tool-web', 'mode-restricted', 'mode-danger',
+])
 
 /** Diff markers carry their own tone; the surrounding card keeps its own. */
 const DIFF_TONE: Record<DiffRow['marker'], RowTone | undefined> = {
@@ -129,6 +138,32 @@ function statusBadge(node: ToolNode): string | undefined {
 /** The result may refine the call intent, just as it may refine the title. */
 function activityOf(call: ToolRenderIntent, result?: ToolRenderIntent): string | undefined {
   return text(result?.activity) ?? text(call.activity)
+}
+
+function summaryOf(call: ToolRenderIntent, result?: ToolRenderIntent): string | undefined {
+  return text(result?.summary) ?? text(call.summary)
+}
+
+function condensedOf(
+  call: ToolRenderIntent, result?: ToolRenderIntent,
+): { title?: string; body?: readonly DetailLine[] } | undefined {
+  const value = result?.condensed ?? call.condensed
+  if (typeof value !== 'object' || value === null) return undefined
+  const title = text(value.title)
+  const body = Array.isArray(value.body)
+    ? value.body.flatMap((line) => {
+      if (typeof line !== 'object' || line === null) return []
+      const row = text(line.text)
+      if (row === undefined) return []
+      const tone = typeof line.tone === 'string' && ROW_TONES.has(line.tone as RowTone)
+        ? line.tone as RowTone
+        : undefined
+      return [{ text: row, ...(tone === undefined ? {} : { tone }) }]
+    })
+    : undefined
+  return title === undefined && body === undefined
+    ? undefined
+    : { ...(title === undefined ? {} : { title }), ...(body === undefined ? {} : { body }) }
 }
 
 function terminalCard(
@@ -388,7 +423,26 @@ export function buildToolCard(
       default: built = genericCard(node, call, result, settings)
     }
     const activity = activityOf(call, result)
-    return activity === undefined ? built : { ...built, activity }
+    const summary = summaryOf(call, result)
+    const declaredTruncated = result?.truncated === true || call.truncated === true
+    const condensed = condensedOf(call, result)
+    // A condensed form is authoritative only when something was omitted. A
+    // normal expanded card therefore remains byte-for-byte compatible.
+    const compacted = condensed !== undefined && (declaredTruncated || built.dropped > 0)
+      ? {
+          ...built,
+          ...(condensed.title === undefined ? {} : { title: condensed.title }),
+          ...(condensed.body === undefined
+            ? {}
+            : { body: condensed.body.slice(0, settings.maxBodyLines) }),
+        }
+      : built
+    return {
+      ...compacted,
+      ...(activity === undefined ? {} : { activity }),
+      ...(summary === undefined ? {} : { summary }),
+      ...(declaredTruncated || built.dropped > 0 ? { truncated: true } : {}),
+    }
   } catch {
     // A malformed intent must never take down the transcript.
     return genericCard(node, { card: 'generic', title: node.name }, undefined, settings)

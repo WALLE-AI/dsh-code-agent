@@ -41,6 +41,8 @@ export interface TerminalLayoutInput {
   contextBar?: boolean
   /** The Agent is working, so the status line above the composer wants a row. */
   working?: boolean
+  /** Main working row plus an optional child-agent row. */
+  workingRows?: number
 }
 
 export interface TerminalLayoutPolicy {
@@ -67,6 +69,8 @@ export interface TerminalLayout extends TerminalLayoutPolicy {
   showContextBar: boolean
   /** The working line fits above the composer. */
   showWorking: boolean
+  /** Working rows the frame can afford (zero, one, or two). */
+  workingRows: number
   showNotice: boolean
   /** Approval preview rows the frame actually reserved. */
   approvalPreviewRows: number
@@ -102,7 +106,10 @@ export function terminalLayout(input: TerminalLayoutInput): TerminalLayout {
   const composerRows = Math.max(1, Math.min(policy.composerRowLimit, input.composerRows ?? 1))
   let showStatus = true
   let showContextBar = input.contextBar === true && !policy.compact
-  let showWorking = input.working === true
+  let workingRows = input.working === true
+    ? Math.max(1, Math.min(2, Math.floor(input.workingRows ?? 1)))
+    : 0
+  let showWorking = workingRows > 0
   let todoRows = Math.max(0, Math.min(policy.todoRowLimit, input.todoRows ?? 0))
   let showNotice = input.notice && !(policy.compact && input.error)
   let showApprovalMargin = true
@@ -114,7 +121,7 @@ export function terminalLayout(input: TerminalLayoutInput): TerminalLayout {
   const fixedRows = (): number => {
     // The transcript's top margin is fixed; its content gets all remaining rows.
     let total = 1 + Number(showStatus) + todoRows
-      + Number(showStatus && showContextBar) + Number(showWorking)
+      + Number(showStatus && showContextBar) + workingRows
     if (input.approval) {
       // A separating blank row, the `Approve <tool>?` title, the preview, and
       // one row per answer. Title and answers are not optional: they name the
@@ -142,7 +149,11 @@ export function terminalLayout(input: TerminalLayoutInput): TerminalLayout {
   // The working line outranks the panel: it is the only thing saying the run is
   // still alive.
   while (todoRows > 0 && fixedRows() >= rows) todoRows--
-  if (fixedRows() >= rows) showWorking = false
+  while (workingRows > 1 && fixedRows() >= rows) workingRows--
+  if (fixedRows() >= rows) {
+    workingRows = 0
+    showWorking = false
+  }
   if (fixedRows() >= rows) showStatus = false
   if (fixedRows() >= rows) showNotice = false
   // Last, because the preview is the evidence the decision turns on. It goes
@@ -156,6 +167,7 @@ export function terminalLayout(input: TerminalLayoutInput): TerminalLayout {
     composerRows,
     todoRows,
     showWorking,
+    workingRows,
     viewportRows: Math.max(1, rows - fixedRows()),
     showStatus,
     showContextBar,

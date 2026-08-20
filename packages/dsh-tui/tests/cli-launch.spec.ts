@@ -14,6 +14,14 @@ import {
   resolveSpawn,
   supportedRuntime,
 } from '../bin/launch.mjs'
+import {
+  canonicalWorkspace,
+  readTrustedWorkspaces,
+  reduceWorkspaceTrust,
+  renderWorkspaceTrust,
+  trustWorkspace,
+  workspaceNeedsTrust,
+} from '../bin/workspace-trust.mjs'
 
 const HARNESS = 'opensource/deepseek-harness/deepseek-harness-master'
 
@@ -25,6 +33,34 @@ function write(path: string, text: string): void {
   mkdirSync(join(path, '..'), { recursive: true })
   writeFileSync(path, text)
 }
+
+describe('workspace trust preflight', () => {
+  it('persists canonical paths and fails closed on a damaged store', () => {
+    const root = scratch()
+    const store = join(root, 'tui/trusted-workspaces.json')
+    const workspace = canonicalWorkspace(root)
+    expect(workspaceNeedsTrust(workspace, store)).toBe(true)
+    trustWorkspace(store, workspace)
+    expect(workspaceNeedsTrust(workspace, store)).toBe(false)
+    expect([...readTrustedWorkspaces(store)]).toEqual([workspace])
+    writeFileSync(store, '{damaged')
+    expect(workspaceNeedsTrust(workspace, store)).toBe(true)
+  })
+
+  it('models navigation, confirmation, rejection, and cancellation', () => {
+    expect(reduceWorkspaceTrust(0, Buffer.from('\x1b[B'))).toEqual({ selected: 1 })
+    expect(reduceWorkspaceTrust(1, Buffer.from('\x1b[A'))).toEqual({ selected: 0 })
+    expect(reduceWorkspaceTrust(0, Buffer.from('\r'))).toEqual({ selected: 0, result: 'accepted' })
+    expect(reduceWorkspaceTrust(1, Buffer.from('\r'))).toEqual({ selected: 1, result: 'rejected' })
+    expect(reduceWorkspaceTrust(0, Buffer.from('\x03'))).toEqual({ selected: 0, result: 'cancelled' })
+  })
+
+  it('bounds every prompt row to a narrow terminal', () => {
+    const frame = renderWorkspaceTrust('/a/very/long/workspace/path/that/must/wrap', 0, 24)
+    expect(frame.split('\n').every(row => row.length <= 24)).toBe(true)
+    expect(frame).toContain('> Yes, use this folder')
+  })
+})
 
 describe('parseEnvFile', () => {
   it('reads KEY=value, keeping everything after the first equals sign', () => {
