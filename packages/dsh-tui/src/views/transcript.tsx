@@ -35,6 +35,11 @@ export function TranscriptRow({ line, columns, theme, now, animate }: {
   animate: boolean
 }): React.ReactElement {
   const plain = truncateToWidth(runningText(line, now, animate), columns)
+  // Ink measures a `<Text>` with an empty string as zero rows tall, so a blank
+  // row asked for by the model would simply vanish. A single space is how you
+  // ask this renderer for an empty line — the model still says `''`, because
+  // what a blank row costs to draw is the view's problem, not the model's.
+  if (plain === '') return <Text> </Text>
   // Styled runs are only used when the row survived truncation intact;
   // re-slicing segments to a cut width would risk splitting a wide cell.
   const segments = line.segments !== undefined && plain === line.text ? line.segments : undefined

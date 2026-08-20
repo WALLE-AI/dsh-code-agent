@@ -236,6 +236,25 @@ describe('terminal frame', () => {
     expect(screen()).toContain('Tip: /help for commands')
   })
 
+  it('shows the product title only once across multiple turns', async () => {
+    const store = new TuiStore(50)
+    store.setInteractive(true)
+    store.setHeader(width => buildSplash(
+      { title: 'DeepSeek Harness TUI', directory: 'repo', tips: ['/help for commands'] },
+      width,
+      UNICODE_GLYPHS,
+    ))
+    for (const turn of [1, 2, 3]) {
+      const seq = (turn - 1) * 3
+      store.append({ seq: seq + 1, kind: 'user', text: `question ${String(turn)}` })
+      store.append({ seq: seq + 2, kind: 'assistant-final', text: `answer ${String(turn)}` })
+      store.append({ seq: seq + 3, kind: 'turn-end', text: 'completed' })
+    }
+    const { screen } = mount(store, {}, { columns: 80, rows: 40 })
+    await settle()
+    expect(screen().match(/DeepSeek Harness TUI/g)).toHaveLength(1)
+  })
+
   it('writes settled rows to the terminal once, so the wheel can reach them', async () => {
     // The banner and every settled turn are handed to the terminal as static
     // output. Written once, they are the terminal's rows afterwards: its own
@@ -318,6 +337,40 @@ describe('terminal frame', () => {
     expect(screen()).not.toContain('64;10;5')
   })
 
+  it('folds the preamble from the second turn on, and spaces the answer off the card', async () => {
+    const store = new TuiStore(50)
+    store.setInteractive(true)
+    const preamble = 'I cannot browse directly.\nSo I will search instead.\nOne moment.'
+    let seq = 0
+    for (const turn of [1, 2]) {
+      store.append({ seq: ++seq, kind: 'user', text: `question ${String(turn)}` })
+      store.append({ seq: ++seq, kind: 'assistant-delta', text: preamble })
+      store.append({ seq: ++seq, kind: 'tool-call', text: '{}', name: 'search', callId: `c${String(turn)}` })
+      store.append({ seq: ++seq, kind: 'tool-result', text: 'found it', callId: `c${String(turn)}` })
+      store.append({ seq: ++seq, kind: 'assistant-delta', text: `answer ${String(turn)}` })
+      store.append({ seq: ++seq, kind: 'turn-end', text: 'completed' })
+    }
+    const { screen } = mount(store, {}, { columns: 80, rows: 44 })
+    await settle()
+    const rows = screen().split('\n')
+    const firstPreamble = rows.findIndex(row => row.includes('I cannot browse directly'))
+    const secondPreamble = rows.findIndex(
+      (row, at) => at > firstPreamble && row.includes('I cannot browse directly'),
+    )
+    expect(firstPreamble).toBeGreaterThan(-1)
+    expect(secondPreamble).toBeGreaterThan(firstPreamble)
+    // Turn one says its piece in full; turn two has said it before, so the same
+    // narration collapses behind the ordinary expand hint.
+    expect(rows[firstPreamble + 1]).toContain('So I will search instead')
+    expect(rows[secondPreamble + 1]).toContain('ctrl+o to expand')
+    // Each answer is lifted off the card above it by one blank row.
+    for (const turn of [1, 2]) {
+      const at = rows.findIndex(row => row.includes(`answer ${String(turn)}`))
+      expect(at, `answer ${String(turn)}`).toBeGreaterThan(0)
+      expect(rows[at - 1]?.trim(), `answer ${String(turn)}`).toBe('')
+    }
+  })
+
   it('wraps a wide line instead of cutting it off', async () => {
     const store = new TuiStore(50)
     store.append({ seq: 1, kind: 'user', text: '修复'.repeat(60) })
@@ -326,12 +379,32 @@ describe('terminal frame', () => {
     const visible = screen().replace(/\[[0-?]*[ -/]*[@-~]/g, '')
     for (const line of visible.split('\n')) expect(displayWidth(line)).toBeLessThanOrEqual(40)
     // The text continues onto further rows rather than ending in an ellipsis.
-    expect(visible.split('\n').filter(line => line.includes('修复')).length).toBeGreaterThan(1)
+    const wrapped = visible.split('\n').filter(line => line.includes('修复'))
+    expect(wrapped.length).toBeGreaterThan(1)
+    expect(wrapped[0]?.startsWith('> ')).toBe(true)
+    for (const continuation of wrapped.slice(1)) expect(continuation.startsWith('  ')).toBe(true)
     expect(visible).not.toContain('…')
   })
 })
 
 describe('running feedback', () => {
+  it('shows the running tool activity declared by its presenter', async () => {
+    let now = 1_000_000
+    const clock = (): number => now
+    const store = new TuiStore(50, {}, undefined, clock)
+    store.setToolPresenter(() => ({
+      call: { card: 'read', title: 'Read src/app.tsx', activity: 'Reading src/app.tsx' },
+    }))
+    store.setInteractive(true)
+    store.setStatus('running')
+    store.append({ seq: 1, kind: 'tool-call', text: '{}', name: 'read', callId: 'c1' })
+    now += 4_000
+    const { screen } = mount(store, {}, { columns: 80, rows: 24 }, clock)
+    await settle()
+    expect(screen()).toContain('Reading src/app.tsx')
+    expect(screen()).not.toContain('Working…')
+  })
+
   it('animates a pending tool card and shows how long it has run', async () => {
     let now = 1_000_000
     const clock = (): number => now

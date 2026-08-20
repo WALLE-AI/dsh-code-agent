@@ -62,7 +62,6 @@ export interface TerminalLayout extends TerminalLayoutPolicy {
   composerRows: number
   /** Goal/todo panel rows the frame actually reserved. */
   todoRows: number
-  showHeader: boolean
   showStatus: boolean
   /** The context bar gets its own row above the status segments. */
   showContextBar: boolean
@@ -101,7 +100,6 @@ export function terminalLayout(input: TerminalLayoutInput): TerminalLayout {
   const rows = Math.max(1, terminalRows - 1)
   const policy = terminalLayoutPolicy(terminalRows)
   const composerRows = Math.max(1, Math.min(policy.composerRowLimit, input.composerRows ?? 1))
-  let showHeader = true
   let showStatus = true
   let showContextBar = input.contextBar === true && !policy.compact
   let showWorking = input.working === true
@@ -115,7 +113,7 @@ export function terminalLayout(input: TerminalLayoutInput): TerminalLayout {
 
   const fixedRows = (): number => {
     // The transcript's top margin is fixed; its content gets all remaining rows.
-    let total = 1 + Number(showHeader) + Number(showStatus) + todoRows
+    let total = 1 + Number(showStatus) + todoRows
       + Number(showStatus && showContextBar) + Number(showWorking)
     if (input.approval) {
       // A separating blank row, the `Approve <tool>?` title, the preview, and
@@ -146,7 +144,6 @@ export function terminalLayout(input: TerminalLayoutInput): TerminalLayout {
   while (todoRows > 0 && fixedRows() >= rows) todoRows--
   if (fixedRows() >= rows) showWorking = false
   if (fixedRows() >= rows) showStatus = false
-  if (fixedRows() >= rows) showHeader = false
   if (fixedRows() >= rows) showNotice = false
   // Last, because the preview is the evidence the decision turns on. It goes
   // only when the alternative is pushing the answers themselves off the screen.
@@ -160,7 +157,6 @@ export function terminalLayout(input: TerminalLayoutInput): TerminalLayout {
     todoRows,
     showWorking,
     viewportRows: Math.max(1, rows - fixedRows()),
-    showHeader,
     showStatus,
     showContextBar,
     showNotice,

@@ -183,6 +183,16 @@ describe('transcript entries', () => {
     )[0]?.statusTone).toBeUndefined()
   })
 
+  it('keeps a declared activity phrase on the tool entry', () => {
+    const [entry] = buildTranscriptEntries(
+      [tool({ callId: 'a', id: 'tool:a', status: 'pending' })],
+      (): ToolPresentation => ({
+        call: { card: 'terminal', title: 'Read src/a.ts', activity: 'Reading src/a.ts' },
+      }),
+    )
+    expect(entry?.activity).toBe('Reading src/a.ts')
+  })
+
   it('splits the dot into its own run without disturbing the row text', () => {
     const entries = buildTranscriptEntries(
       [tool({ callId: 'a', id: 'tool:a', output: 'done' })],
@@ -198,5 +208,156 @@ describe('transcript entries', () => {
       throw new Error('presenter exploded')
     })
     expect(entries[0]?.header).toBe('✓ bash')
+  })
+})
+
+/** A user message, which is what starts a turn. */
+function user(seq: number, text = 'go'): TranscriptNode {
+  return { id: `user:${String(seq)}`, kind: 'user', text, firstSeq: seq, lastSeq: seq }
+}
+
+/**
+ * An assistant block. Three lines by default: folding one costs a row to say so,
+ * so a block only folds once it hides at least two.
+ */
+function say(
+  seq: number,
+  text = 'I will look.\nGive me a moment.\nSearching the workspace now.',
+): TranscriptNode {
+  return { id: `assistant:${String(seq)}`, kind: 'assistant', text, firstSeq: seq, lastSeq: seq }
+}
+
+describe('preamble folding', () => {
+  it('shows the first turn preamble in full and folds it from the second turn on', () => {
+    const nodes: readonly TranscriptNode[] = [
+      user(1), say(2), tool({ callId: 'a', id: 'tool:a' }), say(4, 'First answer.'),
+      user(5), say(6), tool({ callId: 'b', id: 'tool:b' }), say(8, 'Second answer.'),
+    ]
+    const entries = buildTranscriptEntries(nodes, generic)
+    // Turn 1: the model's narration of intent is orientation worth reading.
+    expect(entries[1]?.foldedByDefault).toBe(false)
+    // Turn 2: the same narration is noise, and folds away behind ctrl+o.
+    expect(entries[5]?.foldedByDefault).toBe(true)
+    // The answers — nothing follows them but the next turn — never fold.
+    expect(entries[3]?.foldedByDefault).toBe(false)
+    expect(entries[7]?.foldedByDefault).toBe(false)
+  })
+
+  it('folds every preamble of a later turn, not just the first', () => {
+    const nodes: readonly TranscriptNode[] = [
+      user(1), say(2, 'turn one'),
+      user(3), say(4), tool({ callId: 'a', id: 'tool:a' }),
+      say(6), tool({ callId: 'b', id: 'tool:b' }), say(8, 'Answer.'),
+    ]
+    const entries = buildTranscriptEntries(nodes, generic)
+    expect(entries[3]?.foldedByDefault).toBe(true)
+    expect(entries[5]?.foldedByDefault).toBe(true)
+    expect(entries[7]?.foldedByDefault).toBe(false)
+  })
+
+  it('leaves a short preamble alone, because folding it would save nothing', () => {
+    const nodes: readonly TranscriptNode[] = [
+      user(1), say(2, 'turn one'),
+      user(3), say(4, 'Searching.'), tool({ callId: 'a', id: 'tool:a' }), say(6, 'Answer.'),
+    ]
+    const entries = buildTranscriptEntries(nodes, generic)
+    expect(entries[3]?.foldedByDefault).toBe(false)
+  })
+
+  it('opens a folded preamble through the ordinary fold override', () => {
+    const nodes: readonly TranscriptNode[] = [
+      user(1), say(2, 'turn one'),
+      user(3), say(4), tool({ callId: 'a', id: 'tool:a' }), say(6, 'Answer.'),
+    ]
+    const entries = buildTranscriptEntries(nodes, generic)
+    const preamble = entries[3]
+    expect(preamble).toBeDefined()
+    expect(entryFolded(preamble!, new Set())).toBe(true)
+    expect(entryFolded(preamble!, new Set([preamble!.id]))).toBe(false)
+  })
+
+  it('re-folds a block once a tool arrives after it', () => {
+    // The cache regression. Whether a block is a preamble depends on nodes that
+    // come *after* it, so a signature keyed only on the block's own text keeps
+    // the stale unfolded entry for ever.
+    const cache = new Map()
+    const before: readonly TranscriptNode[] = [user(1), say(2, 'turn one'), user(3), say(4)]
+    expect(buildTranscriptEntries(before, generic, {}, cache)[3]?.foldedByDefault).toBe(false)
+    const after: readonly TranscriptNode[] = [...before, tool({ callId: 'a', id: 'tool:a' })]
+    expect(buildTranscriptEntries(after, generic, {}, cache)[3]?.foldedByDefault).toBe(true)
+  })
+})
+
+describe('the margin between a tool and the answer that follows it', () => {
+  it('separates a tool card from the assistant block after it', () => {
+    const nodes: readonly TranscriptNode[] = [
+      user(1), tool({ callId: 'a', id: 'tool:a' }), say(3, 'Answer.'),
+    ]
+    const lines = transcriptLines(buildTranscriptEntries(nodes, generic))
+    const at = lines.findIndex(line => line.text.includes('Answer.'))
+    expect(at).toBeGreaterThan(0)
+    expect(lines[at - 1]?.text).toBe('')
+    // The blank row belongs to the block it introduces, not to the card above:
+    // rows leave for the terminal's scrollback by entry, and a spacer that left
+    // with the card would strand the answer against the previous row.
+    expect(lines[at - 1]?.entryId).toBe(lines[at]?.entryId)
+  })
+
+  it('adds no margin where the transition already reads as one', () => {
+    const nodes: readonly TranscriptNode[] = [
+      user(1), say(2, 'Looking.'),
+      tool({ callId: 'a', id: 'tool:a' }), tool({ callId: 'b', id: 'tool:b' }),
+    ]
+    const lines = transcriptLines(buildTranscriptEntries(nodes, generic))
+    expect(lines.filter(line => line.text === '')).toHaveLength(0)
+  })
+
+  it('keeps exactly one margin when the card above it is folded and reopened', () => {
+    // The other cache regression: whether a block gets a margin depends on the
+    // entry *before* it, which is not part of that block's own row-cache key.
+    const nodes: readonly TranscriptNode[] = [
+      user(1), tool({ callId: 'a', id: 'tool:a', output: longOutput }), say(3, 'Answer.'),
+    ]
+    const entries = buildTranscriptEntries(nodes, generic)
+    const cache = new Map()
+    const card = entries[1]
+    expect(card).toBeDefined()
+    for (const overrides of [new Set<string>(), new Set([card!.id]), new Set<string>()]) {
+      const lines = transcriptLines(entries, overrides, 0, cache)
+      expect(lines.filter(line => line.text === '')).toHaveLength(1)
+      const at = lines.findIndex(line => line.text.includes('Answer.'))
+      expect(lines[at - 1]?.text).toBe('')
+    }
+  })
+})
+
+describe('wrapped text headers', () => {
+  it('hangs continuations under the content after the marker', () => {
+    const nodes: readonly TranscriptNode[] = [
+      user(1, 'A user message long enough to wrap across several terminal rows.'),
+      say(2, 'An assistant answer long enough to wrap across several terminal rows.'),
+    ]
+    const lines = transcriptLines(buildTranscriptEntries(nodes, generic), new Set(), 20)
+    for (const id of ['user:1', 'assistant:2']) {
+      const rows = lines.filter(line => line.entryId === id)
+      expect(rows.length).toBeGreaterThan(1)
+      expect(rows[0]?.text.startsWith('  ')).toBe(false)
+      for (const row of rows.slice(1)) {
+        expect(row.text.startsWith('  ')).toBe(true)
+        expect(displayWidth(row.text)).toBeLessThanOrEqual(20)
+      }
+    }
+  })
+
+  it('keeps styled header segments identical to the indented row text', () => {
+    const nodes: readonly TranscriptNode[] = [
+      say(1, '**A bold assistant heading that wraps onto another terminal row.**'),
+    ]
+    const lines = transcriptLines(buildTranscriptEntries(nodes, generic), new Set(), 20)
+    expect(lines.length).toBeGreaterThan(1)
+    for (const line of lines) {
+      expect(line.segments?.map(segment => segment.text).join('')).toBe(line.text)
+    }
+    expect(lines[1]?.text.startsWith('  ')).toBe(true)
   })
 })

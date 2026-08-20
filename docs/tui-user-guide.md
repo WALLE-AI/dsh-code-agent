@@ -87,11 +87,11 @@ cp packages/dsh-tui/completions/dsh-tui.fish ~/.config/fish/completions/dsh.fish
 | Key | Action |
 |---|---|
 | `Enter` | Send the draft. |
-| `Ctrl+Enter` | Insert a newline instead of sending. |
+| `Ctrl+Enter` / `Alt+Enter` | Insert a newline instead of sending. |
 | `←` / `→` | Move the caret one character. |
-| `Ctrl+←` / `Ctrl+→` | Move the caret one word. |
+| `Ctrl+←` / `Ctrl+→` | Move the caret one word. `Alt+←` / `Alt+→` and the readline pair `Alt+B` / `Alt+F` do the same. |
 | `Ctrl+A` / `Ctrl+E` | Jump to the start or end of the current draft line. |
-| `Ctrl+W` | Delete the word before the caret. |
+| `Ctrl+W` | Delete the word before the caret. `Alt+Backspace` and `Alt+Delete` do the same. |
 | `Ctrl+U` / `Ctrl+K` | Delete to the start or end of the line. |
 | `Esc` | Clears a non-empty draft first. With nothing to clear, the first press arms cancellation and the second cancels the current run. |
 | `Ctrl+C` | Two-step cancellation, then a bounded shutdown. |
@@ -108,6 +108,37 @@ cp packages/dsh-tui/completions/dsh-tui.fish ~/.config/fish/completions/dsh.fish
 | `↑` / `↓` | Move between lines of a multi-line draft, then walk the draft history. Inside a question, moves the option selection. |
 | `1`–`9`, `Space` | Pick a question option; `Space` toggles in multi-select. |
 | `y` / `n` | In an approval, allow once or reject outright. `1`–`9` answer by position, including the rows that ask for a reason. |
+
+### Rebinding a key
+
+Every shortcut in the table above is one row in a table the resolver and the
+shortcut sheet both read, so rebinding one changes what the key does and what
+`?` says it does in the same move.
+
+Write `~/.dsh/keybindings.json` (or `$DSH_HOME/keybindings.json`), mapping an
+action to a chord, a list of chords, or `null` to hand the key back to typing:
+
+```json
+{
+  "palette:open": "ctrl+g",
+  "session:browse": ["ctrl+r", "alt+r"],
+  "help:open": null
+}
+```
+
+Chords are lowercase, with `ctrl+`, `alt+` and `shift+` prefixes: `ctrl+g`,
+`shift+tab`, `alt+left`, `pageup`, `escape`, `space`, `?`. Action names are the
+`surface:verb` ids shown by the shortcut sheet — `palette:open`,
+`session:browse`, `fold:toggle`, `editor:open`, `permission:cycle`,
+`caret:word-left`, and so on.
+
+`app:cancel` (`Ctrl+C`) and `app:escape` (`Esc`) are **reserved** and cannot be
+rebound or unbound: a terminal you cannot get out of is not a terminal.
+
+Anything wrong with the file — a misspelt action, an unreadable chord, a chord
+you have given two meanings — is reported in the notice row and then ignored,
+and the defaults stand. Nothing in that file can stop the TUI from starting,
+because the TUI is where you would go to fix it.
 
 ### Scrolling: the terminal's, not the app's
 
@@ -183,6 +214,23 @@ is never folded for being long: prose is the reply, not evidence.
 
 Output beyond the inline budget is reported as
 `… N more line(s) not shown (output capped)` rather than silently dropped.
+
+The transcript is in **causal order**: a tool card sits after the text that
+led to it and before the answer it made possible, and the model's answer is
+always the last thing in a turn. Each step of a turn keeps its own blocks, so
+one turn can show several `∴ Thinking` sections and several `●` paragraphs —
+they are the separate things the model actually said, not one merged bubble.
+
+An assistant block with a tool call still to come in the same turn is a
+**preamble** — the model saying what it is about to do. In the first turn it is
+shown in full, because it is orientation and often carries the caveat the
+answer rests on ("no tool to fetch those directly"). From the second turn on
+the same narration is folded behind `Ctrl+O`, since by then you know the
+routine. It folds only when folding buys a row: a one- or two-line preamble
+stays exactly as it is.
+
+A blank row separates a tool card from the answer that follows it, so a short
+reply is not read as part of the card above it.
 
 A **run of successful look-ups collapses into one card**. Three or more
 consecutive reads and searches that all succeeded become a single row —

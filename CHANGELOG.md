@@ -4,7 +4,42 @@ All notable changes to the DeepSeek Harness TUI profile.
 
 ## Unreleased
 
+### Fixed
+
+- **The transcript showed the answer above the evidence that produced it.** A
+  turn that searched five times and then replied rendered the reply first and
+  the five cards after it — and it was not a display quirk in one place, it was
+  every one of the eight upstream session samples. Two faults compounded:
+  the projection treated `user`, `marker` and `turn` as block boundaries but not
+  `tool`, so text written after a tool ran was folded back into the paragraph
+  that preceded it; and an assistant message whose content held no text block
+  still pushed an empty bubble, which then sat in front of the tool calls and
+  swallowed the next step's answer.
+
+  A text block is now open only while it is the last node. Once anything is
+  pushed after it — a tool call above all — it is closed, and the next delta
+  starts a new block. That is the streaming form of what upstream's own web UI
+  and Claude Code both do by splitting a message into one node per content
+  block, and the Code Mode sample now renders block-for-block against
+  `apps/web/tests/snapshots/code-mode-round/ui.expected.md`.
+
+  Two blocks of one message need two identities, so a block opened under a
+  message id that already has one takes an ordinal. Without it the fixture with
+  the interleaved shape produced two different paragraphs sharing the id
+  `assistant:a1`, which the row cache, the fold set and the scrollback split
+  would all have treated as one node.
+
+  `upstream-fixture-parity.spec.ts` gained the assertion it was missing: the
+  full node sequence of each sample, plus "no empty bubbles" and "no duplicate
+  ids". It only ever checked the tool nodes' own properties, which is how a
+  transcript in the wrong order passed for as long as it existed.
+
 ### Added
+
+- **Tools can describe their live activity in their own words.** A
+  `presentCall` intent may declare `activity`, such as `Reading src/app.tsx`,
+  and the working line shows it while the call is pending. Existing tools keep
+  using their card title as the fallback.
 
 - **A run of successful look-ups collapses into one card.** A turn that greps
   once and reads eight files used to spend nine cards and forty rows saying so,
@@ -53,6 +88,51 @@ All notable changes to the DeepSeek Harness TUI profile.
   a keystroke rather than a refusal. On a terminal with no room for four rows
   the two wider answers are dropped first.
 
+- **Keys can be rebound.** Write `~/.dsh/keybindings.json` mapping an action to
+  a chord, a list of chords, or `null` to hand the key back to typing.
+
+  This was only possible once the chords had one home. They used to be spelled
+  inline in the resolver — `ctrl(key, 'p')` for the palette, `key.name === 'tab'
+  && key.shift` for the mode cycle — with a second, hand-written table
+  describing them for the shortcut sheet, and a drift test holding the two
+  copies together. Rebinding anything in that arrangement meant editing the
+  resolver, the sheet and the guide, and missing one of them was silent. The
+  chords now live in one table that the resolver, the sheet and every piece of
+  prose that names a key all read, so a rebind changes the behaviour and its
+  description in the same move. The drift test is gone; there is nothing left
+  for it to compare.
+
+  `app:cancel` and `app:escape` are reserved and cannot be rebound: a terminal
+  you cannot get out of is not a terminal. A misspelt action, an unreadable
+  chord, or a chord given two meanings is reported in the notice row and then
+  ignored — a bad config file must never be what stops the terminal from
+  opening, because the terminal is where you would fix it.
+
+  Conflicts are only reported when the override caused them. Some chords are
+  shared on purpose — `Tab` accepts a completion while the list is open and
+  moves focus when it is not — and telling someone their config broke something
+  they never touched is worse than saying nothing.
+
+  What did *not* move into the table is when an action applies. Whether `↑`
+  walks the history or moves the caret depends on where the caret is, and that
+  is a condition, not a chord.
+
+- **A preamble is shown once and folded thereafter.** An assistant block with a
+  tool call still to come in the same turn is the model narrating its intent.
+  The first turn shows it in full — it is orientation, and it often carries the
+  caveat the answer rests on. From the second turn on it folds behind `Ctrl+O`.
+  It is folded rather than dropped for that same reason: "I have no tool that
+  can fetch those directly" is what tells you how far to trust the answer, and
+  it must stay reachable. Folding only happens when it buys a row, so a short
+  preamble is left exactly as it was.
+
+- **A blank row lifts an answer off the tool card above it.** A one-line reply
+  pressed against a tall card read as part of it. The row is added only for
+  that transition: card-after-card stays tight, and a block followed by the
+  tool it triggered is one thought and is not cut in half. The spacer belongs
+  to the block it introduces, not to the card above, so it cannot be stranded
+  when the card leaves for the terminal's scroll buffer.
+
 - **Notices take turns instead of overwriting each other.** The row held a
   single string, so whatever was said last won and nothing ever expired: a
   terminal-capability warning raised at startup was written over by the
@@ -73,6 +153,25 @@ All notable changes to the DeepSeek Harness TUI profile.
   and `views/` paints. What is left is the wiring only React can express.
 
 ### Fixed
+
+- The live frame no longer prints a second `DeepSeek Harness TUI` header after
+  every settled turn. The product title now appears only in the startup splash,
+  and the reclaimed row is available to the transcript.
+
+- Wrapped user and assistant headers now use a hanging indent, so continuation
+  rows align with the text after `> ` or `● ` instead of jumping back to column
+  zero. Continuations are rewrapped to their smaller width budget, keeping CJK
+  text and styled Markdown inside the terminal width.
+
+- Ink reports a bare `Esc` with its `meta` flag set, because the escape key
+  *is* the meta prefix on that wire. Chord normalisation now ignores it there;
+  honouring it would have spelled every `Esc` as `alt+escape` and left the
+  binding permanently unmatched.
+
+- Ink measures a `<Text>` holding an empty string as zero rows tall, so a blank
+  row asked for by the transcript model simply vanished. Blank rows are drawn as
+  a row again; the model still says `''`, because what an empty line costs to
+  draw is the view's problem.
 
 - `interactive-smoke.ts` still required wheel reporting to be enabled on every
   run, which had stopped being true when the wheel was handed back to the

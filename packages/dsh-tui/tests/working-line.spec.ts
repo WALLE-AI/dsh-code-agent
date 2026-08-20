@@ -1,8 +1,13 @@
 import { describe, expect, it } from 'vitest'
 import { displayWidth } from '../src/terminal-text.ts'
 import {
-  buildWorkingLine, TOKENS_AFTER_MS, workingVerb, type WorkingLineInput,
+  buildWorkingLine, STALL_AFTER_MS, TOKENS_AFTER_MS, workingVerb,
+  type WorkingLineInput,
 } from '../src/working-line.ts'
+
+/** The rendered row; the stall flag is asserted on its own where it matters. */
+const line = (input: WorkingLineInput, columns: number): string =>
+  buildWorkingLine(input, columns).text
 
 const BASE: WorkingLineInput = {
   frame: '⠋', turn: 0, elapsedMs: 4_000, separator: '·',
@@ -23,28 +28,73 @@ describe('working verb', () => {
 
 describe('working line', () => {
   it('shows the frame, the verb and how long it has been going', () => {
-    expect(buildWorkingLine(BASE, 80)).toBe('⠋ Working… · 4s')
+    expect(line(BASE, 80)).toBe('⠋ Working… · 4s')
   })
 
   it('holds the token count back until the wait is long enough to want it', () => {
-    expect(buildWorkingLine({ ...BASE, tokens: 1_234 }, 80)).toBe('⠋ Working… · 4s')
-    expect(buildWorkingLine({ ...BASE, tokens: 1_234, elapsedMs: TOKENS_AFTER_MS }, 80))
+    expect(line({ ...BASE, tokens: 1_234 }, 80)).toBe('⠋ Working… · 4s')
+    expect(line({ ...BASE, tokens: 1_234, elapsedMs: TOKENS_AFTER_MS }, 80))
       .toBe('⠋ Working… · 30s · 1.2k tokens')
   })
 
   it('omits tokens the projection never reported', () => {
-    expect(buildWorkingLine({ ...BASE, elapsedMs: 60_000 }, 80)).toBe('⠋ Working… · 1m00s')
+    expect(line({ ...BASE, elapsedMs: 60_000 }, 80)).toBe('⠋ Working… · 1m00s')
   })
 
   it('uses the separator it was given, so ASCII terminals stay ASCII', () => {
-    expect(buildWorkingLine({ ...BASE, frame: '|', separator: '-' }, 80))
-      .toBe('| Working… - 4s')
+    expect(line({ ...BASE, frame: '|', separator: '-' }, 80)).toBe('| Working… - 4s')
   })
 
   it('stays inside the terminal width at every size', () => {
     for (let columns = 0; columns <= 60; columns++) {
-      const line = buildWorkingLine({ ...BASE, tokens: 90_000, elapsedMs: 90_000 }, columns)
-      expect(displayWidth(line)).toBeLessThanOrEqual(columns)
+      const row = line({ ...BASE, tokens: 90_000, elapsedMs: 90_000, silentMs: 60_000 }, columns)
+      expect(displayWidth(row)).toBeLessThanOrEqual(columns)
     }
+  })
+})
+
+describe('what the run is actually doing', () => {
+  it('names the running call rather than inventing a verb', () => {
+    expect(line({ ...BASE, activity: 'Read src/app.tsx', toolRunning: true }, 80))
+      .toBe('⠋ Read src/app.tsx · 4s')
+  })
+
+  it('falls back to the verb when nothing has declared itself', () => {
+    expect(line(BASE, 80)).toContain('Working…')
+  })
+})
+
+describe('a run that has gone quiet', () => {
+  it('says so once the silence is long enough to worry about', () => {
+    const quiet = { ...BASE, elapsedMs: 60_000, silentMs: STALL_AFTER_MS }
+    const built = buildWorkingLine(quiet, 80)
+    expect(built.stalled).toBe(true)
+    expect(built.text).toBe('⠋ Working… · no output for 10s · 1m00s')
+  })
+
+  it('is not stalled while a tool is in flight, however quiet it is', () => {
+    // The tool is the work, and its own card is already saying so. Calling that
+    // a stall would paint a warning over every long command.
+    const built = buildWorkingLine(
+      { ...BASE, silentMs: 10 * STALL_AFTER_MS, toolRunning: true },
+      80,
+    )
+    expect(built.stalled).toBe(false)
+    expect(built.text).not.toContain('no output')
+  })
+
+  it('is not stalled before the threshold', () => {
+    expect(buildWorkingLine({ ...BASE, silentMs: STALL_AFTER_MS - 1 }, 80).stalled).toBe(false)
+  })
+
+  it('keeps the stall when the terminal is too narrow for anything else', () => {
+    // Fields are dropped from the end, and the stall is the one field that
+    // changes what the reader should do about the wait.
+    const built = buildWorkingLine(
+      { ...BASE, elapsedMs: 90_000, tokens: 90_000, silentMs: 30_000 },
+      34,
+    )
+    expect(built.text).toContain('no output for 30s')
+    expect(built.text).not.toContain('tokens')
   })
 })

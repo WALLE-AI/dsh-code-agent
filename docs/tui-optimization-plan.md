@@ -426,6 +426,9 @@ export function shortcutFor(action: string, surface: UiSurface | 'global'): stri
 
 ### P2-8　工具意图表达力扩展
 
+**执行状态（2026-08-20）**：`activity` 的声明、传播与 working line 消费已完成；
+`summary`、`condensed`、`truncated` 尚未实施。
+
 在 `ToolRenderIntent` 上加四个可选字段，全部向后兼容（缺失即当前行为）：
 
 ```ts

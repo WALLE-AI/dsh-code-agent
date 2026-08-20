@@ -18,7 +18,7 @@ export type TranscriptTone = 'user' | 'assistant' | 'reasoning' | 'system' | 'to
 export type RowTone =
   | TranscriptTone
   | 'diff-add' | 'diff-remove' | 'diff-hunk'
-  | 'code' | 'heading' | 'quote' | 'bullet' | 'badge'
+  | 'code' | 'heading' | 'quote' | 'bullet' | 'badge' | 'warning'
   // Tool card kinds, worn by the status dot only. They say what a call *does*
   // — run, edit, look — which is the one thing worth a glance before the title
   // is read. The kind comes from the card the tool declared, never from its

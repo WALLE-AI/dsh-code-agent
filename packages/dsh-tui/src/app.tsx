@@ -9,13 +9,14 @@
  */
 
 import React, { useEffect, useRef, useState, useSyncExternalStore } from 'react'
-import { Box, render, Static, Text, useInput } from 'ink'
+import { Box, render, Static, useInput } from 'ink'
 import { paintInPlace } from './frame-writer.ts'
 import { emptyComposer, type ComposerState } from './composer.ts'
 import type { TuiActions, TuiView } from './contracts.ts'
 import { useAnimationClock, useTerminalSize } from './hooks.tsx'
 import { dispatchAction, keepsCancelArmed, type PaletteState } from './input-dispatch.ts'
 import { fromInkKey, resolveKey } from './keymap.ts'
+import { DEFAULT_KEYMAP, type Keymap } from './keybindings.ts'
 import { readMouse, WHEEL_ROWS } from './mouse.ts'
 import { RenderBoundary } from './render-boundary.tsx'
 import { emptyScrollback, splitScrollback, type ScrollbackState } from './scrollback.ts'
@@ -44,11 +45,14 @@ import { HelpScreen, SessionBrowserScreen } from './views/screens.tsx'
 
 export function TuiApp({
   store, actions, stdout, theme, onRenderError, animate = true, clock = Date.now,
+  keys = DEFAULT_KEYMAP,
 }: {
   store: TuiStore
   actions: TuiActions
   stdout: NodeJS.WriteStream
   theme: Theme
+  /** The effective bindings, once a user's overrides have been merged in. */
+  keys?: Keymap
   /** Off for a terminal that cannot animate, and for deterministic tests. */
   animate?: boolean
   clock?: () => number
@@ -151,7 +155,9 @@ export function TuiApp({
       }
       return
     }
-    const action = resolveKey(vm.surface, fromInkKey(input, key), keyContextOf(state, ui, vm))
+    const action = resolveKey(
+      vm.surface, fromInkKey(input, key), keyContextOf(state, ui, vm), keys,
+    )
     if (action === undefined) {
       if ((vm.surface === 'composer' || vm.surface === 'transcript') && confirm !== undefined) {
         setConfirm(undefined)
@@ -185,7 +191,9 @@ export function TuiApp({
     })
   })
 
-  if (vm.helpVisible) return <HelpScreen theme={theme} rows={rows} columns={columns} />
+  if (vm.helpVisible) {
+    return <HelpScreen theme={theme} rows={rows} columns={columns} keys={keys} />
+  }
   if (browser !== undefined && vm.browserOpen) {
     return <SessionBrowserScreen
       vm={vm} browser={browser} theme={theme} rows={rows} columns={columns} now={now}
@@ -193,9 +201,6 @@ export function TuiApp({
   }
 
   return <Box flexDirection="column">
-    {!vm.layout.showHeader ? null : <Box justifyContent="space-between">
-      <Text bold>DeepSeek Harness TUI</Text><Text>{state.status}</Text>
-    </Box>}
     {/*
       Settled rows, handed to the terminal once each. Ink writes `Static`
       children above the repainted frame and never touches them again, which is
@@ -244,6 +249,7 @@ export function createInkView(
   onRenderError?: (region: string, message: string) => void,
   animate = true,
   clock: () => number = Date.now,
+  keys: Keymap = DEFAULT_KEYMAP,
 ): TuiView {
   // Ink repaints by erasing every row it wrote last time; on a full-height
   // frame with a spinner running that is a whole-screen erase ten times a
@@ -257,6 +263,7 @@ export function createInkView(
       theme={theme}
       animate={animate}
       clock={clock}
+      keys={keys}
       {...onRenderError === undefined ? {} : { onRenderError }}
     />,
     // Ink would unmount on the first Ctrl+C; cancellation must go through the

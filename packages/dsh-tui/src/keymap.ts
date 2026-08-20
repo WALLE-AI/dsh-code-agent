@@ -9,6 +9,7 @@
  */
 
 import type { ComposerDeletion, ComposerMotion } from './composer.ts'
+import { DEFAULT_KEYMAP, formatChord, type Keymap } from './keybindings.ts'
 
 export type KeyName =
   | 'return' | 'escape' | 'tab' | 'up' | 'down' | 'left' | 'right'
@@ -130,10 +131,6 @@ function isPrintable(key: KeyEvent): boolean {
   return !key.ctrl && !key.meta && key.input !== ''
 }
 
-function ctrl(key: KeyEvent, letter: string): boolean {
-  return key.ctrl && key.input === letter
-}
-
 /**
  * Resolve one press against the surface that owns the keyboard.
  *
@@ -144,29 +141,32 @@ export function resolveKey(
   surface: UiSurface,
   key: KeyEvent,
   context: KeyContext,
+  keys: Keymap = DEFAULT_KEYMAP,
 ): UiAction | undefined {
   // Ctrl+C outranks every surface: it is the one key that always reaches the
-  // bounded shutdown.
-  if (ctrl(key, 'c')) return context.cancelArmed ? { kind: 'cancel' } : { kind: 'cancel-arm' }
+  // bounded shutdown, which is why it is reserved from rebinding.
+  if (keys.bound('app:cancel', key)) {
+    return context.cancelArmed ? { kind: 'cancel' } : { kind: 'cancel-arm' }
+  }
 
   switch (surface) {
-    case 'approval': return approvalKey(key, context)
-    case 'approval-feedback': return approvalFeedbackKey(key)
-    case 'question': return questionKey(key, context)
-    case 'palette': return paletteKey(key)
+    case 'approval': return approvalKey(key, context, keys)
+    case 'approval-feedback': return approvalFeedbackKey(key, keys)
+    case 'question': return questionKey(key, context, keys)
+    case 'palette': return paletteKey(key, keys)
     // Any key dismisses the help sheet; it is a reference card, not a mode.
     case 'help': return { kind: 'close-help' }
-    case 'browser': return browserKey(key)
-    default: return openKey(surface, key, context)
+    case 'browser': return browserKey(key, keys)
+    default: return openKey(surface, key, context, keys)
   }
 }
 
-function approvalKey(key: KeyEvent, context: KeyContext): UiAction | undefined {
+function approvalKey(key: KeyEvent, context: KeyContext, keys: Keymap): UiAction | undefined {
   // The letter answers stay, and stay meaning what they always meant: `y`
   // allows once and `n` rejects now, whatever else the list has grown. Neither
   // ever lands on a row that would then ask for something.
-  if (key.input.toLowerCase() === 'y') return { kind: 'approval-shortcut', allowed: true }
-  if (key.input.toLowerCase() === 'n') return { kind: 'approval-shortcut', allowed: false }
+  if (keys.bound('approval:allow', key)) return { kind: 'approval-shortcut', allowed: true }
+  if (keys.bound('approval:reject', key)) return { kind: 'approval-shortcut', allowed: false }
   // Digits address the list by position, so the row a user reads as `3` is the
   // row `3` answers with — including the ones that ask for a reason.
   const digit = /^[1-9]$/.test(key.input) ? Number(key.input) - 1 : undefined
@@ -176,12 +176,12 @@ function approvalKey(key: KeyEvent, context: KeyContext): UiAction | undefined {
       : undefined
   }
   // Esc fails closed, which is what the queue does when it cannot ask at all.
-  if (key.name === 'escape') return { kind: 'approval-shortcut', allowed: false }
-  if (key.name === 'up') return { kind: 'approval-move', delta: -1 }
-  if (key.name === 'down') return { kind: 'approval-move', delta: 1 }
+  if (keys.bound('app:escape', key)) return { kind: 'approval-shortcut', allowed: false }
+  if (keys.bound('approval:previous', key)) return { kind: 'approval-move', delta: -1 }
+  if (keys.bound('approval:next', key)) return { kind: 'approval-move', delta: 1 }
   // Only a bare Enter confirms: a modifier held over from the previous keystroke
   // must not be able to answer a prompt that gates a tool run.
-  if (isPlainReturn(key)) return { kind: 'approval-confirm' }
+  if (keys.bound('approval:confirm', key) && isPlainReturn(key)) return { kind: 'approval-confirm' }
   return undefined
 }
 
@@ -192,45 +192,49 @@ function approvalKey(key: KeyEvent, context: KeyContext): UiAction | undefined {
  * a user who opened the field by mistake must be able to get back to the list
  * without having answered anything. The fail-closed Esc is the one on the list.
  */
-function approvalFeedbackKey(key: KeyEvent): UiAction | undefined {
-  if (key.name === 'escape') return { kind: 'approval-feedback-cancel' }
+function approvalFeedbackKey(key: KeyEvent, keys: Keymap): UiAction | undefined {
+  if (keys.bound('approval:cancel-reason', key)) return { kind: 'approval-feedback-cancel' }
   if (key.name === 'backspace' || key.name === 'delete') {
     return { kind: 'approval-feedback-backspace' }
   }
-  if (isPlainReturn(key)) return { kind: 'approval-feedback-submit' }
+  if (keys.bound('approval:submit-reason', key) && isPlainReturn(key)) {
+    return { kind: 'approval-feedback-submit' }
+  }
   if (isPrintable(key)) return { kind: 'approval-feedback-type', text: key.input }
   return undefined
 }
 
-function questionKey(key: KeyEvent, context: KeyContext): UiAction | undefined {
-  if (key.name === 'up') return { kind: 'question-move', delta: -1 }
-  if (key.name === 'down') return { kind: 'question-move', delta: 1 }
+function questionKey(key: KeyEvent, context: KeyContext, keys: Keymap): UiAction | undefined {
+  if (keys.bound('question:previous', key)) return { kind: 'question-move', delta: -1 }
+  if (keys.bound('question:next', key)) return { kind: 'question-move', delta: 1 }
   if (key.name === 'backspace' || key.name === 'delete') return { kind: 'question-backspace' }
   if (/^[1-9]$/.test(key.input)) return { kind: 'question-choose', index: Number(key.input) - 1 }
-  if (key.input === ' ' && context.questionHasOptions) return { kind: 'question-toggle' }
-  if (isReturn(key)) return { kind: 'question-submit' }
+  if (keys.bound('question:toggle', key) && context.questionHasOptions) {
+    return { kind: 'question-toggle' }
+  }
+  if (keys.bound('question:submit', key) && isReturn(key)) return { kind: 'question-submit' }
   if (isPrintable(key)) return { kind: 'question-type', text: key.input }
   return undefined
 }
 
-function paletteKey(key: KeyEvent): UiAction | undefined {
-  if (key.name === 'escape') return { kind: 'palette-close' }
-  if (key.name === 'up') return { kind: 'palette-move', delta: -1 }
-  if (key.name === 'down') return { kind: 'palette-move', delta: 1 }
+function paletteKey(key: KeyEvent, keys: Keymap): UiAction | undefined {
+  if (keys.bound('palette:close', key)) return { kind: 'palette-close' }
+  if (keys.bound('palette:previous', key)) return { kind: 'palette-move', delta: -1 }
+  if (keys.bound('palette:next', key)) return { kind: 'palette-move', delta: 1 }
   if (key.name === 'backspace' || key.name === 'delete') return { kind: 'palette-backspace' }
-  if (isReturn(key)) return { kind: 'palette-accept' }
+  if (keys.bound('palette:accept', key) && isReturn(key)) return { kind: 'palette-accept' }
   if (isPrintable(key)) return { kind: 'palette-type', text: key.input }
   return undefined
 }
 
-function browserKey(key: KeyEvent): UiAction | undefined {
-  if (key.name === 'escape') return { kind: 'browser-escape' }
-  if (key.name === 'up') return { kind: 'browser-move', delta: -1 }
-  if (key.name === 'down') return { kind: 'browser-move', delta: 1 }
-  if (key.name === 'pageUp') return { kind: 'browser-page', delta: -1 }
-  if (key.name === 'pageDown') return { kind: 'browser-page', delta: 1 }
+function browserKey(key: KeyEvent, keys: Keymap): UiAction | undefined {
+  if (keys.bound('browser:escape', key)) return { kind: 'browser-escape' }
+  if (keys.bound('browser:previous', key)) return { kind: 'browser-move', delta: -1 }
+  if (keys.bound('browser:next', key)) return { kind: 'browser-move', delta: 1 }
+  if (keys.bound('browser:page-up', key)) return { kind: 'browser-page', delta: -1 }
+  if (keys.bound('browser:page-down', key)) return { kind: 'browser-page', delta: 1 }
   if (key.name === 'backspace' || key.name === 'delete') return { kind: 'browser-backspace' }
-  if (isPlainReturn(key)) return { kind: 'browser-accept' }
+  if (keys.bound('browser:accept', key) && isPlainReturn(key)) return { kind: 'browser-accept' }
   // Everything else is the query: the list is the search result, so there is no
   // mode to enter first.
   if (isPrintable(key)) return { kind: 'browser-type', text: key.input }
@@ -242,84 +246,95 @@ function openKey(
   surface: 'transcript' | 'composer',
   key: KeyEvent,
   context: KeyContext,
+  keys: Keymap,
 ): UiAction | undefined {
-  if (ctrl(key, 'p')) return context.interactive ? { kind: 'open-palette' } : undefined
-  if (ctrl(key, 'r')) return context.interactive ? { kind: 'open-picker' } : undefined
+  if (keys.bound('palette:open', key)) {
+    return context.interactive ? { kind: 'open-palette' } : undefined
+  }
+  if (keys.bound('session:browse', key)) {
+    return context.interactive ? { kind: 'open-picker' } : undefined
+  }
 
   // An open completion list owns Tab, the vertical keys and Esc; it is the
-  // innermost layer, so it is also the first one Esc peels off.
+  // innermost layer, so it is also the first one Esc peels off. This is the
+  // context stack in the one place the profile actually has one: the same
+  // chords mean different things depending on which layer is showing, and the
+  // innermost layer is asked first.
   if (surface === 'composer' && context.completionOpen) {
-    if (key.name === 'tab') return { kind: 'completion-accept' }
+    if (keys.bound('completion:accept', key)) return { kind: 'completion-accept' }
     // Enter accepts only while there is something left to complete. Once the
     // token already spells the candidate, Enter must send — otherwise typing a
     // whole command name would need two presses to run it.
     if (isReturn(key) && !context.completionExact) return { kind: 'completion-accept' }
-    if (key.name === 'up') return { kind: 'completion-move', delta: -1 }
-    if (key.name === 'down') return { kind: 'completion-move', delta: 1 }
-    if (key.name === 'escape') return { kind: 'completion-dismiss' }
+    if (keys.bound('history:previous', key)) return { kind: 'completion-move', delta: -1 }
+    if (keys.bound('history:next', key)) return { kind: 'completion-move', delta: 1 }
+    if (keys.bound('app:escape', key)) return { kind: 'completion-dismiss' }
   }
 
-  // Shift+Tab must be tested before plain Tab: a backtab parses as tab+shift.
-  if (key.name === 'tab' && key.shift) return { kind: 'cycle-mode' }
-  if (key.name === 'tab') return { kind: 'toggle-focus' }
+  // The mode cycle must be tested before plain Tab: a backtab parses as
+  // tab+shift, so the more specific chord has to be offered the press first.
+  if (keys.bound('permission:cycle', key)) return { kind: 'cycle-mode' }
+  if (keys.bound('focus:toggle', key) && !key.shift) return { kind: 'toggle-focus' }
   // `?` is only a help request when it cannot be part of a message.
-  if (key.input === '?' && surface === 'composer' && context.draftEmpty) {
+  if (keys.bound('help:open', key) && surface === 'composer' && context.draftEmpty) {
     return { kind: 'open-help' }
   }
 
   if (surface === 'transcript') {
-    if (key.name === 'up' || key.input === 'k') return { kind: 'scroll', direction: -1, page: false }
-    if (key.name === 'down' || key.input === 'j') return { kind: 'scroll', direction: 1, page: false }
-    if (isReturn(key) || key.name === 'escape') return { kind: 'focus-composer' }
+    if (keys.bound('scroll:up', key)) return { kind: 'scroll', direction: -1, page: false }
+    if (keys.bound('scroll:down', key)) return { kind: 'scroll', direction: 1, page: false }
+    if (keys.bound('focus:composer', key)) return { kind: 'focus-composer' }
   }
 
   // Graded Esc: each press peels exactly one layer. A non-empty draft is the
   // first thing to go, so Esc never cancels a run the user was still typing to.
-  if (key.name === 'escape') {
+  if (keys.bound('app:escape', key)) {
     if (surface === 'composer' && context.interactive && !context.draftEmpty) {
       return { kind: 'composer-clear' }
     }
     return context.cancelArmed ? { kind: 'cancel' } : { kind: 'cancel-arm' }
   }
-  if (ctrl(key, 'o')) return { kind: 'toggle-fold' }
-  if (ctrl(key, 'x')) return { kind: 'open-editor' }
-  if (key.name === 'pageUp') return { kind: 'scroll', direction: -1, page: true }
-  if (key.name === 'pageDown') return { kind: 'scroll', direction: 1, page: true }
+  if (keys.bound('fold:toggle', key)) return { kind: 'toggle-fold' }
+  if (keys.bound('editor:open', key)) return { kind: 'open-editor' }
+  if (keys.bound('scroll:page-up', key)) return { kind: 'scroll', direction: -1, page: true }
+  if (keys.bound('scroll:page-down', key)) return { kind: 'scroll', direction: 1, page: true }
 
   if (!context.interactive || surface === 'transcript') return undefined
 
   // Caret motion. Ink 5 never surfaces Home/End (`parse-keypress` resolves them
   // to a name that `useInput` blanks out), so the readline pair carries them.
-  if (key.name === 'left') {
-    return { kind: 'composer-move', motion: key.ctrl || key.meta ? 'word-left' : 'left' }
-  }
-  if (key.name === 'right') {
-    return { kind: 'composer-move', motion: key.ctrl || key.meta ? 'word-right' : 'right' }
-  }
-  if (key.meta && key.input === 'b') return { kind: 'composer-move', motion: 'word-left' }
-  if (key.meta && key.input === 'f') return { kind: 'composer-move', motion: 'word-right' }
-  if (ctrl(key, 'a')) return { kind: 'composer-move', motion: 'line-start' }
-  if (ctrl(key, 'e')) return { kind: 'composer-move', motion: 'line-end' }
+  // The word chords are offered first because they are the more specific press:
+  // `ctrl+left` would otherwise be swallowed by the plain `left` binding.
+  if (keys.bound('caret:word-left', key)) return { kind: 'composer-move', motion: 'word-left' }
+  if (keys.bound('caret:word-right', key)) return { kind: 'composer-move', motion: 'word-right' }
+  if (keys.bound('caret:left', key)) return { kind: 'composer-move', motion: 'left' }
+  if (keys.bound('caret:right', key)) return { kind: 'composer-move', motion: 'right' }
+  if (keys.bound('caret:line-start', key)) return { kind: 'composer-move', motion: 'line-start' }
+  if (keys.bound('caret:line-end', key)) return { kind: 'composer-move', motion: 'line-end' }
 
   // Deletion. Ink reports the physical Backspace key (DEL, 0x7f) as `delete`,
-  // so the two flags are one key here; Alt+Backspace is the word kill.
+  // so the two flags are one key here.
+  if (keys.bound('edit:delete-word', key)) return { kind: 'composer-delete', deletion: 'back-word' }
   if (key.name === 'backspace' || key.name === 'delete') {
-    return { kind: 'composer-delete', deletion: key.meta ? 'back-word' : 'back-char' }
+    return { kind: 'composer-delete', deletion: 'back-char' }
   }
-  if (ctrl(key, 'w')) return { kind: 'composer-delete', deletion: 'back-word' }
-  if (ctrl(key, 'u')) return { kind: 'composer-delete', deletion: 'to-line-start' }
-  if (ctrl(key, 'k')) return { kind: 'composer-delete', deletion: 'to-line-end' }
+  if (keys.bound('edit:delete-to-line-start', key)) {
+    return { kind: 'composer-delete', deletion: 'to-line-start' }
+  }
+  if (keys.bound('edit:delete-to-line-end', key)) {
+    return { kind: 'composer-delete', deletion: 'to-line-end' }
+  }
 
   // A multi-line draft owns the vertical keys; history takes them at the edges.
-  if (key.name === 'up') {
+  if (keys.bound('history:previous', key)) {
     return context.canMoveUp ? { kind: 'composer-move', motion: 'up' } : { kind: 'history', delta: -1 }
   }
-  if (key.name === 'down') {
+  if (keys.bound('history:next', key)) {
     return context.canMoveDown ? { kind: 'composer-move', motion: 'down' } : { kind: 'history', delta: 1 }
   }
 
-  if (isReturn(key) && (key.ctrl || key.meta)) return { kind: 'composer-newline' }
-  if (isReturn(key)) return { kind: 'submit' }
+  if (keys.bound('chat:newline', key)) return { kind: 'composer-newline' }
+  if (keys.bound('chat:submit', key) && isReturn(key)) return { kind: 'submit' }
   if (isPrintable(key)) return { kind: 'composer-insert', text: key.input }
   return undefined
 }
@@ -376,46 +391,22 @@ export interface KeyBindingDoc {
 }
 
 /**
- * The documented binding table. It is descriptive, not executable: the resolver
- * above is the behaviour, and a drift test keeps the two in step.
+ * The shortcut sheet's rows.
+ *
+ * Derived from the effective keymap rather than written out again: the sheet
+ * and the resolver read the same row, so a rebound key changes both in one
+ * move. This is what replaced the hand-written copy and the drift test that
+ * kept the two honest.
  */
-export const KEY_BINDINGS: readonly KeyBindingDoc[] = Object.freeze([
-  { keys: 'Ctrl+C', surface: 'global', description: 'Arm, then run the bounded shutdown' },
-  { keys: 'Esc', surface: 'global', description: 'Clear the draft, then arm, then cancel the run' },
-  { keys: 'Enter', surface: 'composer', description: 'Send the draft' },
-  { keys: 'Ctrl+Enter', surface: 'composer', description: 'Insert a newline instead of sending' },
-  { keys: '← / →', surface: 'composer', description: 'Move the caret one character' },
-  { keys: 'Ctrl+← / Ctrl+→', surface: 'composer', description: 'Move the caret one word' },
-  { keys: 'Ctrl+A / Ctrl+E', surface: 'composer', description: 'Jump to the start or end of the line' },
-  { keys: 'Ctrl+W', surface: 'composer', description: 'Delete the word before the caret' },
-  { keys: 'Ctrl+U / Ctrl+K', surface: 'composer', description: 'Delete to the start or end of the line' },
-  { keys: '↑ / ↓', surface: 'composer', description: 'Move between draft lines, then walk the history' },
-  { keys: 'Tab', surface: 'composer', description: 'Accept the completion, or move focus between the composer and the transcript' },
-  { keys: '/', surface: 'composer', description: 'Complete a command name at the start of the draft' },
-  { keys: '@', surface: 'composer', description: 'Complete a workspace path anywhere in the draft' },
-  { keys: '?', surface: 'composer', description: 'Show the shortcut sheet, when the draft is empty' },
-  { keys: 'Shift+Tab', surface: 'composer', description: 'Cycle the permission mode' },
-  { keys: 'Ctrl+P', surface: 'composer', description: 'Open the command palette' },
-  { keys: 'Ctrl+R', surface: 'composer', description: 'Open the session browser' },
-  { keys: 'Ctrl+O', surface: 'composer', description: 'Fold or unfold the tool card in view' },
-  { keys: 'Ctrl+X', surface: 'composer', description: "Open that card's first location in $EDITOR" },
-  { keys: 'PgUp / PgDn', surface: 'composer', description: 'Scroll the transcript by a page' },
-  { keys: 'j / k', surface: 'transcript', description: 'Scroll one row, as do ↑ and ↓' },
-  { keys: 'Enter / Esc', surface: 'transcript', description: 'Return to the composer' },
-  { keys: 'y', surface: 'approval', description: 'Allow the call once' },
-  { keys: 'n', surface: 'approval', description: 'Reject the call' },
-  { keys: '1–9', surface: 'approval', description: 'Answer with that row, including the ones that ask for more' },
-  { keys: 'Esc', surface: 'approval', description: 'Reject the call, failing closed' },
-  { keys: '↑ / ↓', surface: 'approval', description: 'Move between the answers' },
-  { keys: 'Enter', surface: 'approval', description: 'Confirm the highlighted answer' },
-  { keys: 'Enter', surface: 'approval-feedback', description: 'Reject, sending the typed reason with it' },
-  { keys: 'Esc', surface: 'approval-feedback', description: 'Go back to the answers without deciding' },
-  { keys: '1–9', surface: 'question', description: 'Pick an option by index' },
-  { keys: 'Space', surface: 'question', description: 'Toggle an option in a multi-select' },
-  { keys: '↑ / ↓', surface: 'question', description: 'Move the option selection' },
-  { keys: '↑ / ↓, Enter, Esc', surface: 'palette', description: 'Select, prefill the draft, close' },
-  { keys: 'type to filter', surface: 'browser', description: 'The list is the search result; there is no mode to enter' },
-  { keys: '↑ / ↓, PgUp / PgDn', surface: 'browser', description: 'Move the cursor' },
-  { keys: 'Enter', surface: 'browser', description: 'Resume the session under the cursor' },
-  { keys: 'Esc', surface: 'browser', description: 'Clear the filter, then close the browser' },
-])
+export function keyBindingDocs(keys: Keymap = DEFAULT_KEYMAP): readonly KeyBindingDoc[] {
+  return keys.bindings()
+    .filter(binding => binding.chords.length > 0)
+    .map(binding => ({
+      keys: binding.chords.map(formatChord).join(' / '),
+      surface: binding.surface,
+      description: binding.description,
+    }))
+}
+
+/** The default sheet, for callers with no user overrides to honour. */
+export const KEY_BINDINGS: readonly KeyBindingDoc[] = Object.freeze(keyBindingDocs())

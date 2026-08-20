@@ -20,6 +20,12 @@ export interface ToolCardView {
   readonly callId: string
   readonly card: ToolCardKind
   readonly title: string
+  /**
+   * Present-tense phrase for the working line — `Reading src/app.tsx` rather
+   * than the card's own past-tense title. Optional: the title is a serviceable
+   * fallback, so a tool that says nothing here still describes itself.
+   */
+  readonly activity?: string
   readonly subtitle?: string
   readonly badge?: string
   readonly status: ToolNode['status']
@@ -118,6 +124,11 @@ function statusBadge(node: ToolNode): string | undefined {
   if (node.status === 'interrupted') return 'interrupted'
   if (node.status === 'failed') return 'failed'
   return undefined
+}
+
+/** The result may refine the call intent, just as it may refine the title. */
+function activityOf(call: ToolRenderIntent, result?: ToolRenderIntent): string | undefined {
+  return text(result?.activity) ?? text(call.activity)
 }
 
 function terminalCard(
@@ -351,20 +362,33 @@ export function buildToolCard(
   const result = presentation.result
   const card = result?.card ?? call.card
   try {
+    let built: ToolCardView
     switch (card) {
-      case 'terminal': return terminalCard(node, call, result, settings)
-      case 'diff': return diffCard(node, call, result, settings, options.diff ?? {})
-      case 'search': return result === undefined
-        ? genericCard(node, call, result, settings)
-        : searchCard(node, call, result, settings)
-      case 'read': return result === undefined
-        ? genericCard(node, call, result, settings)
-        : readCard(node, call, result, settings)
-      case 'web': return result === undefined
-        ? genericCard(node, call, result, settings)
-        : webCard(node, call, result, settings)
-      default: return genericCard(node, call, result, settings)
+      case 'terminal':
+        built = terminalCard(node, call, result, settings)
+        break
+      case 'diff':
+        built = diffCard(node, call, result, settings, options.diff ?? {})
+        break
+      case 'search':
+        built = result === undefined
+          ? genericCard(node, call, result, settings)
+          : searchCard(node, call, result, settings)
+        break
+      case 'read':
+        built = result === undefined
+          ? genericCard(node, call, result, settings)
+          : readCard(node, call, result, settings)
+        break
+      case 'web':
+        built = result === undefined
+          ? genericCard(node, call, result, settings)
+          : webCard(node, call, result, settings)
+        break
+      default: built = genericCard(node, call, result, settings)
     }
+    const activity = activityOf(call, result)
+    return activity === undefined ? built : { ...built, activity }
   } catch {
     // A malformed intent must never take down the transcript.
     return genericCard(node, { card: 'generic', title: node.name }, undefined, settings)

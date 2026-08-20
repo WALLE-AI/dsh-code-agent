@@ -52,6 +52,45 @@ describe('fixed Harness session fixture parity', () => {
     for (const entry of corpus) expect(project(entry).raw.length).toBeGreaterThan(0)
   })
 
+  it('renders every scenario in causal order', () => {
+    // The assertion this suite was missing. It only ever checked the tool
+    // nodes' own properties, so a transcript that showed the answer *above* the
+    // evidence that produced it passed for as long as it existed.
+    const shape = (entry: CorpusEntry): string =>
+      project(entry).nodes.map(node => node.kind).join(' ')
+    expect(shape(corpus[0] as CorpusEntry)).toBe('user reasoning assistant turn')
+    expect(shape(corpus[1] as CorpusEntry)).toBe('user tool tool assistant turn')
+    expect(shape(corpus[2] as CorpusEntry))
+      .toBe('user reasoning tool tool tool reasoning assistant turn')
+    expect(shape(corpus[3] as CorpusEntry)).toBe('user tool tool tool assistant turn')
+    expect(shape(corpus[4] as CorpusEntry))
+      .toBe('user reasoning tool reasoning tool reasoning assistant turn')
+    expect(shape(corpus[5] as CorpusEntry)).toBe('user tool marker assistant turn')
+    expect(shape(corpus[6] as CorpusEntry)).toBe('user reasoning tool reasoning assistant turn')
+    expect(shape(corpus[7] as CorpusEntry))
+      .toBe('user reasoning tool marker reasoning assistant turn')
+    // No scenario may end with a tool: the model always gets the last word,
+    // and no scenario may open one with an empty bubble.
+    for (const entry of corpus) {
+      const nodes = project(entry).nodes
+      expect(nodes.some(node => node.kind === 'assistant' && node.text === ''), entry.name)
+        .toBe(false)
+      expect(new Set(nodes.map(node => node.id)).size, entry.name).toBe(nodes.length)
+    }
+  })
+
+  it('puts the Code Mode answer after the work it describes', () => {
+    // Pinned against the upstream Web UI snapshot, which renders the same log
+    // as Think → Code → sub-calls → Think → DONE.
+    const nodes = project(corpus[2] as CorpusEntry).nodes
+    const runCode = nodes.findIndex(node => node.kind === 'tool' && node.name === 'run_code')
+    const done = nodes.findIndex(node => node.kind === 'assistant' && node.text.includes('DONE'))
+    expect(runCode).toBeGreaterThan(-1)
+    expect(done).toBeGreaterThan(runCode)
+    // Two steps, two blocks of reasoning — not one merged block.
+    expect(nodes.filter(node => node.kind === 'reasoning')).toHaveLength(2)
+  })
+
   it('preserves text and parallel tool semantics', () => {
     const text = project(corpus[0] as CorpusEntry).nodes
     expect(text.some(node => node.kind === 'assistant' && node.text.includes('PONG'))).toBe(true)

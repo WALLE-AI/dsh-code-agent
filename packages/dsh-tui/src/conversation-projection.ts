@@ -58,6 +58,14 @@ export class ConversationProjection {
   private readonly nodeIndex = new Map<string, number>()
   /** Call ids still awaiting a result, so an interrupt never scans either. */
   private readonly pendingTools = new Set<string>()
+  /**
+   * Text blocks opened per message, so a second block of the same message gets
+   * its own id. One assistant message can hold several text blocks separated by
+   * tool calls; without the ordinal they would both be `assistant:<messageId>`
+   * and the row cache, the fold set and the scrollback would treat two
+   * different paragraphs as one node.
+   */
+  private readonly textBlocks = new Map<string, number>()
   private lastSeq: number | undefined
   private issue: ProjectionIssue | undefined
   private value: ConversationSnapshot = freezeSnapshot([], undefined)
@@ -115,6 +123,7 @@ export class ConversationProjection {
     this.fingerprints.clear()
     this.nodeIndex.clear()
     this.pendingTools.clear()
+    this.textBlocks.clear()
     this.lastSeq = undefined
     this.issue = undefined
     this.value = freezeSnapshot([], undefined)
@@ -165,35 +174,44 @@ export class ConversationProjection {
 
   private mergeText(event: TerminalEvent): void {
     const kind: TextNode['kind'] = event.kind === 'reasoning-delta' ? 'reasoning' : 'assistant'
-    let id = event.messageId === undefined
-      ? this.findOpenTextId(kind)
-      : textId(event, kind)
-    let index = this.indexOf(id)
-    if (index === -1 && event.kind === 'assistant-final') {
-      id = this.findOpenTextId(kind)
-      index = this.indexOf(id)
-    }
+    const index = this.openTextIndex(kind)
+    const isFinal = event.kind === 'assistant-final'
+    // A message whose content held no text block carries no text. It must not
+    // leave an empty bubble standing in front of the tool calls it *did* carry,
+    // and it must never erase what the deltas already delivered.
+    if (isFinal && event.text === '') return
     if (index === -1) {
       this.pushNode({
-        id: textId(event, kind), kind, text: event.text,
+        id: this.openTextId(event, kind), kind, text: event.text,
         firstSeq: event.seq, lastSeq: event.seq,
       })
       return
     }
+    // The id a block was opened with is the id it keeps. Renaming it to the
+    // message id on the final was safe only while one message meant one node.
     const current = this.nodes[index] as TextNode
-    const nextId = event.kind === 'assistant-final' && event.messageId !== undefined
-      ? textId(event, kind)
-      : current.id
     this.nodes[index] = {
       ...current,
-      id: nextId,
-      text: event.kind === 'assistant-final' ? event.text : current.text + event.text,
+      text: isFinal ? event.text : current.text + event.text,
       lastSeq: event.seq,
     }
-    if (nextId !== current.id) {
-      this.nodeIndex.delete(current.id)
-      this.nodeIndex.set(nextId, index)
-    }
+  }
+
+  /**
+   * Mint the id for a text block being opened now.
+   *
+   * Without a message id the first delta's sequence number is already unique.
+   * With one, the block ordinal is what separates two blocks of the same
+   * message — the same job claude-code's `deriveUUID(parentUuid, blockIndex)`
+   * does. The first block keeps the bare id so the common single-block case is
+   * unchanged.
+   */
+  private openTextId(event: TerminalEvent, kind: TextNode['kind']): string {
+    const id = textId(event, kind)
+    if (event.messageId === undefined) return id
+    const ordinal = this.textBlocks.get(id) ?? 0
+    this.textBlocks.set(id, ordinal + 1)
+    return ordinal === 0 ? id : `${id}#${String(ordinal)}`
   }
 
   /** Append one node and keep the id index in step. */
@@ -208,13 +226,18 @@ export class ConversationProjection {
     return index !== undefined && this.nodes[index]?.id === id ? index : -1
   }
 
-  private findOpenTextId(kind: TextNode['kind']): string | undefined {
-    for (let index = this.nodes.length - 1; index >= 0; index--) {
-      const node = this.nodes[index]
-      if (node?.kind === 'turn' || node?.kind === 'user' || node?.kind === 'marker') return undefined
-      if (node?.kind === kind) return node.id
-    }
-    return undefined
+  /**
+   * The text block still open for merging, or `-1`.
+   *
+   * A block is open only while it is the *last* node. Once anything else has
+   * been pushed after it — a tool call above all — that block is closed for
+   * good and the next delta starts a new one. This is what keeps the transcript
+   * in causal order: text produced after a tool ran must render after it, not
+   * be folded back into the paragraph that preceded it.
+   */
+  private openTextIndex(kind: TextNode['kind']): number {
+    const last = this.nodes.length - 1
+    return last >= 0 && this.nodes[last]?.kind === kind ? last : -1
   }
 
   /** Rebuild the id index after the bounded tail dropped leading nodes. */

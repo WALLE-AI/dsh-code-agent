@@ -3,6 +3,9 @@ import { homedir } from 'node:os'
 import { basename, dirname, join, resolve, sep } from 'node:path'
 import { createInkView } from './app.tsx'
 import { ApprovalQueue } from './approval-queue.ts'
+import {
+  DEFAULT_KEYMAP, describeIssues, parseKeybindings, type Keymap,
+} from './keybindings.ts'
 import { QuestionQueue } from './question-queue.ts'
 import { AgentInputRouter, routeUserInput } from './input-router.ts'
 import type { AgentController } from './agent-controller.ts'
@@ -156,6 +159,25 @@ function detectBranch(workspace: string): { branch?: string } {
  * Open the draft history file, tolerating every failure. History is a
  * convenience: an unwritable home directory must not stop a session.
  */
+/**
+ * Read the user's key overrides, if there are any.
+ *
+ * A missing file is the normal case and says nothing; an unreadable one is
+ * reported through the notice row rather than thrown, for the same reason the
+ * draft history is: losing a preference must not stop a session from starting.
+ */
+function loadKeybindings(path: string): { keymap: Keymap; notice?: string } {
+  let contents: string
+  try {
+    contents = readFileSync(path, 'utf8')
+  } catch {
+    return { keymap: DEFAULT_KEYMAP }
+  }
+  const { keymap, issues } = parseKeybindings(contents)
+  const notice = describeIssues(issues)
+  return { keymap, ...(notice === undefined ? {} : { notice }) }
+}
+
 function createDraftHistory(path: string): {
   readonly entries: readonly string[]
   record(draft: string): void
@@ -284,11 +306,12 @@ async function run(ctx: HarnessContext, config: Config, exit: (code: number) => 
   internals.stdin.on('end', onEndOfInput)
   internals.stdin.on('close', onEndOfInput)
 
-  // Draft history lives beside the session store so it follows $DSH_HOME.
-  const history = createDraftHistory(
-    join(process.env.DSH_HOME?.trim() ?? join(homedir(), '.dsh'), 'tui', 'history.jsonl'),
-  )
+  // Draft history and key overrides live beside the session store so they
+  // follow $DSH_HOME.
+  const dshHome = process.env.DSH_HOME?.trim() ?? join(homedir(), '.dsh')
+  const history = createDraftHistory(join(dshHome, 'tui', 'history.jsonl'))
   store.setHistory(history.entries)
+  const keys = loadKeybindings(join(dshHome, 'keybindings.json'))
 
   const workspace = process.cwd()
   const workspaceFacts = { directory: basename(workspace), ...detectBranch(workspace) }
@@ -472,7 +495,20 @@ async function run(ctx: HarnessContext, config: Config, exit: (code: number) => 
       // A terminal that cannot draw the frames gets the static status glyph
       // instead of a spinner that would only churn the screen.
       capabilities.unicode,
+      Date.now,
+      keys.keymap,
     )
+    // A typo in the overrides is reported and then ignored: the file is edited
+    // from a terminal, so a bad file must never be what stops one from opening.
+    if (keys.notice !== undefined) {
+      store.pushNotice({
+        key: 'keybindings',
+        text: keys.notice,
+        tone: 'error',
+        priority: 'high',
+        timeoutMs: 15_000,
+      })
+    }
     // What the session *is* comes first; what the terminal cannot do follows.
     // Both are shown now — the capability note used to be written over by the
     // resume line one statement later, and never reached the screen at all.

@@ -28,7 +28,7 @@ import {
   ASCII_TODO_GLYPHS, buildTodoPanel, todoPanelRows, UNICODE_TODO_GLYPHS,
   type TodoPanelRow,
 } from './todo-panel.ts'
-import { buildWorkingLine } from './working-line.ts'
+import { buildWorkingLine, type WorkingLine } from './working-line.ts'
 import { glyphSet, type GlyphSet } from './glyphs.ts'
 import { spinnerFrame } from './spinner.ts'
 import { emptyViewport, viewportLines, type ViewportState } from './viewport.ts'
@@ -151,7 +151,7 @@ export interface ViewModel {
   readonly layout: TerminalLayout
   readonly glyphs: GlyphSet
   readonly status: StatusModel
-  readonly workingLine?: string
+  readonly workingLine?: WorkingLine
   readonly todoPanel: readonly TodoPanelRow[]
   readonly notice?: string
   readonly noticeTone: RowTone
@@ -342,6 +342,16 @@ export function buildViewModel(input: ViewModelInput): ViewModel {
     working: running,
     contextBar: status.bar !== undefined,
   })
+  // A call in flight is the better subject than any verb this profile could
+  // invent. Its explicit activity is best; the card title remains the
+  // backwards-compatible fallback for tools that do not declare one.
+  const runningCard = [...state.entries].reverse()
+    .find(entry => entry.nodeKind === 'tool' && entry.status === 'pending')
+  const toolRunning = runningCard !== undefined
+  // The glyph and its space are one cell each and sit at the head of the row.
+  const activity = runningCard === undefined
+    ? undefined
+    : runningCard.activity ?? runningCard.header.slice(2)
   // While the Agent is working, one line above the composer says so.
   const workingLine = !running || !layout.showWorking ? undefined : buildWorkingLine({
     frame: animate ? spinnerFrame(now) : glyphs.pending,
@@ -349,6 +359,9 @@ export function buildViewModel(input: ViewModelInput): ViewModel {
     elapsedMs: state.turn.startedAtMs === 0 ? 0 : now - state.turn.startedAtMs,
     ...(state.activity.tokens === undefined ? {} : { tokens: state.activity.tokens.output }),
     separator: glyphs.marker,
+    ...(activity === undefined || activity === '' ? {} : { activity }),
+    ...(state.outputAtMs === 0 ? {} : { silentMs: Math.max(0, now - state.outputAtMs) }),
+    toolRunning,
   }, columns)
   const todoPanel = buildTodoPanel(
     state.activity, columns, layout.todoRows,

@@ -30,6 +30,7 @@
     "check:packed": "node --import tsx/esm scripts/packed-install-smoke.ts",
     "check:release": "node --import tsx/esm scripts/release-gate.ts",
     "check:cancel": "node --import tsx/esm scripts/cancel-smoke.ts",
+    "capture:transcript": "node --import tsx/esm scripts/transcript-capture.ts",
     "check:real:interactive": "node --import tsx/esm scripts/real-interactive-smoke.ts",
     "check:real:approval": "node --import tsx/esm scripts/real-interactive-smoke.ts --approval",
     "publish:npm": "node --import tsx/esm scripts/publish-npm.ts"

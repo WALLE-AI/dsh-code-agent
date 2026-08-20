@@ -25,6 +25,8 @@ export interface TranscriptEntry {
   /** Styled runs of the header row, when the entry carries inline markup. */
   readonly headerSegments?: readonly StyledSegment[]
   readonly badge?: string
+  /** Present-tense tool-owned phrase for the working line. */
+  readonly activity?: string
   readonly detail: readonly DetailLine[]
   readonly foldable: boolean
   /** Fold policy before any user override, judged on line count alone. */
@@ -157,7 +159,11 @@ function splitText(value: string): { header: string; detail: readonly DetailLine
   return { header: lines[0] ?? '', detail: plainLines(lines.slice(1)) }
 }
 
-function textEntry(node: Exclude<TranscriptNode, ToolNode>, glyphs: GlyphSet): TranscriptEntry {
+function textEntry(
+  node: Exclude<TranscriptNode, ToolNode>,
+  glyphs: GlyphSet,
+  preamble = false,
+): TranscriptEntry {
   const { header, detail } = splitText(node.text)
   switch (node.kind) {
     case 'user':
@@ -205,10 +211,51 @@ function textEntry(node: Exclude<TranscriptNode, ToolNode>, glyphs: GlyphSet): T
           const row = rows[index + 1]
           return row === undefined ? line : { ...line, text: row.text, segments: row.segments }
         }),
-        foldable: detail.length > 0, foldedByDefault: false, locations: [],
+        foldable: detail.length > 0,
+        // A preamble is what the model said on its way to doing something, and
+        // from the second turn on it is narration the reader has already read.
+        // It folds only when folding actually buys a row: hiding a single line
+        // costs that line back to say so.
+        foldedByDefault: preamble && detail.length > FOLD_MARGIN,
+        locations: [],
       }
     }
   }
+}
+
+/**
+ * Which text blocks are preambles, by node index.
+ *
+ * A *preamble* is an assistant block with a tool call still to come in the same
+ * turn — the model narrating its intent, as opposed to the answer it arrives at.
+ * Both halves of that definition need the whole node list, which is why this is
+ * a pass rather than a property of the node: whether a block is a preamble
+ * depends on what comes after it, and which turn it is in depends on what came
+ * before.
+ *
+ * The first turn is exempt. There the narration is orientation — it says what
+ * the session is about to do, and often carries the caveat the answer rests on.
+ */
+function preambleFlags(nodes: readonly TranscriptNode[]): readonly boolean[] {
+  const flags = new Array<boolean>(nodes.length).fill(false)
+  // A user message starts a turn, matching how the store counts them.
+  let turn = 0
+  const turnOf = nodes.map((node) => {
+    if (node.kind === 'user') turn++
+    return turn
+  })
+  let toolAhead = false
+  for (let index = nodes.length - 1; index >= 0; index--) {
+    const node = nodes[index]
+    if (node === undefined) continue
+    if (node.kind === 'user') {
+      toolAhead = false
+      continue
+    }
+    flags[index] = node.kind === 'assistant' && toolAhead && (turnOf[index] ?? 0) > 1
+    if (node.kind === 'tool') toolAhead = true
+  }
+  return flags
 }
 
 function toolEntry(
@@ -240,6 +287,7 @@ function toolEntry(
     tone: node.status === 'failed' ? 'error' : 'tool',
     depth,
     header: `${statusGlyph(node.status, options.glyphs ?? UNICODE_GLYPHS)} ${card.title}`,
+    ...(card.activity === undefined ? {} : { activity: card.activity }),
     ...(card.badge === undefined ? {} : { badge: card.badge }),
     detail,
     foldable: detail.length > 0,
@@ -260,10 +308,13 @@ function toolEntry(
   }
 }
 
-function signatureOf(node: TranscriptNode, depth: number): string {
+function signatureOf(node: TranscriptNode, depth: number, preamble: boolean): string {
   return node.kind === 'tool'
     ? `tool|${String(depth)}|${String(node.lastSeq)}|${node.status}|${node.name}|${String(node.input.length)}|${String(node.output.length)}`
-    : `${node.kind}|${String(node.lastSeq)}|${String(node.text.length)}`
+    // Preamble-ness is not a property of the block's own text — it turns true
+    // when a tool call arrives after it. Leaving it out of the signature is
+    // what would keep a stale, unfolded entry alive for the rest of the session.
+    : `${node.kind}|${String(node.lastSeq)}|${String(node.text.length)}|${preamble ? 'p' : '-'}`
 }
 
 /** Project durable transcript nodes into terminal entries. */
@@ -275,17 +326,19 @@ export function buildTranscriptEntries(
 ): readonly TranscriptEntry[] {
   const callIds = new Set(nodes.flatMap(node => node.kind === 'tool' ? [node.callId] : []))
   const live = new Set<string>()
-  const entries = nodes.map((node) => {
+  const preambles = preambleFlags(nodes)
+  const entries = nodes.map((node, index) => {
     const depth = node.kind === 'tool' && node.parentCallId !== undefined && callIds.has(node.parentCallId)
       ? 1
       : 0
-    const signature = signatureOf(node, depth)
+    const preamble = preambles[index] === true
+    const signature = signatureOf(node, depth, preamble)
     live.add(node.id)
     const cached = cache?.get(node.id)
     if (cached?.signature === signature) return cached.entry
     let entry: TranscriptEntry
     if (node.kind !== 'tool') {
-      entry = textEntry(node, options.glyphs ?? UNICODE_GLYPHS)
+      entry = textEntry(node, options.glyphs ?? UNICODE_GLYPHS, preamble)
     } else {
       let presentation: ToolPresentation
       try {
@@ -369,6 +422,24 @@ function indented(
   return indent === '' ? segments : [{ text: indent }, ...segments]
 }
 
+/**
+ * Whether a blank row should introduce this entry.
+ *
+ * A short answer pressed straight against a tall tool card reads as part of it.
+ * One blank row is enough to separate the two, and it is added only for that
+ * one transition: a card followed by another card is a list and should stay
+ * tight, and a block followed by the tool it triggered is one thought and must
+ * not be cut in half.
+ */
+function needsMargin(
+  previous: TranscriptEntry | undefined,
+  entry: TranscriptEntry,
+): boolean {
+  return previous?.nodeKind === 'tool'
+    && entry.nodeKind === 'text'
+    && entry.tone === 'assistant'
+}
+
 /** Flatten entries into display rows, honouring indentation and fold state. */
 export function transcriptLines(
   entries: readonly TranscriptEntry[],
@@ -379,18 +450,24 @@ export function transcriptLines(
 ): readonly TranscriptLine[] {
   const all: TranscriptLine[] = []
   const live = new Set<string>()
-  for (const entry of entries) {
+  for (const [index, entry] of entries.entries()) {
     const folded = entryFolded(entry, overrides, columns)
+    // The margin depends on the entry *before* this one, which is not part of
+    // this entry's identity — folding the card above changes nothing about the
+    // answer itself, but it can change whether the answer is still preceded by
+    // a card. Without it in the key the cache keeps a stale spacer.
+    const margin = needsMargin(entries[index - 1], entry)
     const key = `${String(columns)}|${String(folded)}|${String(entry.startedAtMs ?? 0)}`
+      + `|${String(margin)}`
     live.add(entry.id)
     const cached = cache?.get(entry.id)
     // The entry object is replaced whenever its content changes, so identity
-    // plus the width and fold state is a complete key.
+    // plus the width, fold state and margin is a complete key.
     if (cached?.key === key && cached.entry === entry) {
       all.push(...cached.lines)
       continue
     }
-    const lines = entryLines(entry, folded, columns, glyphs)
+    const lines = entryLines(entry, folded, columns, glyphs, margin)
     cache?.set(entry.id, { key, entry, lines })
     all.push(...lines)
   }
@@ -405,8 +482,13 @@ function entryLines(
   folded: boolean,
   columns: number,
   glyphs: GlyphSet,
+  margin = false,
 ): readonly TranscriptLine[] {
   const lines: TranscriptLine[] = []
+  // The spacer belongs to the block it introduces, never to the card above it:
+  // rows leave for the terminal's scrollback an entry at a time, and a spacer
+  // that left with the card would strand the answer against the previous row.
+  if (margin) lines.push({ entryId: entry.id, text: '', tone: entry.tone, header: false })
   /**
    * Emit one logical row as however many terminal rows it needs. `columns <= 0`
    * means "do not wrap", which is what the tests and the pre-resize first frame
@@ -420,7 +502,15 @@ function entryLines(
       lines.push(line)
       return
     }
-    const wrapped = wrapWords(line.text, columns)
+    const firstPass = wrapWords(line.text, columns)
+    // A hanging indent consumes room on continuation rows. Re-wrap those rows
+    // to the smaller budget before adding it, otherwise a full-width CJK row
+    // followed by two spaces would exceed the terminal by two cells.
+    const hanging = displayWidth(indent) < columns ? indent : ''
+    const continuationColumns = columns - displayWidth(hanging)
+    const wrapped = firstPass.flatMap((text, index) => index === 0
+      ? [text]
+      : wrapWords(text.trimStart(), continuationColumns))
     const styled = line.segments === undefined
       ? undefined
       : wrapSegments(line.segments, wrapped)
@@ -429,7 +519,7 @@ function entryLines(
     const { running, segments, ...rest } = line
     wrapped.forEach((text, index) => {
       // A continuation keeps the row's indent so the block still reads as one.
-      const body = index === 0 ? text : `${indent}${text.trimStart()}`
+      const body = index === 0 ? text : `${hanging}${text}`
       const rowSegments = styled?.[index]
       lines.push({
         ...rest,
@@ -437,7 +527,7 @@ function entryLines(
         ...(index === 0 && running !== undefined ? { running } : {}),
         ...(rowSegments === undefined
           ? {}
-          : { segments: index === 0 ? rowSegments : [{ text: indent }, ...rowSegments] }),
+          : { segments: index === 0 ? rowSegments : [{ text: hanging }, ...rowSegments] }),
       })
     })
   }
@@ -446,9 +536,17 @@ function entryLines(
     const text = sanitizeLine(
       `${indent}${entry.header}${entry.badge === undefined ? '' : `  [${entry.badge}]`}`,
     )
+    // Text headers start with a semantic marker and a space (`> `, `● `,
+    // `∴ `). Their continuations hang under the content after that marker.
+    // Tool cards retain their structural depth indent: their body gutter already
+    // provides the visual hierarchy this rule adds to prose.
+    const markerEnd = entry.nodeKind === 'text' ? entry.header.indexOf(' ') + 1 : 0
+    const headerIndent = markerEnd <= 0
+      ? indent
+      : `${indent}${' '.repeat(displayWidth(entry.header.slice(0, markerEnd)))}`
     emit({
       entryId: entry.id,
-      indent,
+      indent: headerIndent,
       tone: entry.tone,
       header: true,
       text,

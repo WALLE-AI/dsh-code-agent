@@ -79,6 +79,7 @@ export class TuiStore {
     history: [],
     workspace: {},
     turn: { index: 0, startedAtMs: 0 },
+    outputAtMs: 0,
     hasMoreHistory: false,
     noticesQueued: 0,
   }
@@ -283,6 +284,9 @@ export class TuiStore {
       // Counted on what actually ran, not on what is shown: collapsing is a
       // display decision and must not change the tool tally in the status row.
       counters: countersOf(built),
+      // Stamped whenever the projection produced something new, which is what
+      // "the model is still talking" means from the view's side.
+      ...(bumpRevision ? { outputAtMs: this.clock() } : {}),
       hasMoreHistory: projected.nodes.length > nodes.length,
       transcriptRevision: this.value.transcriptRevision + (bumpRevision ? 1 : 0),
     }

@@ -18,6 +18,19 @@ function node(overrides: Partial<ToolNode> = {}): ToolNode {
 }
 
 describe('terminal cards', () => {
+  it('carries a sanitized tool-owned activity phrase', () => {
+    const card = buildToolCard(node({ status: 'pending' }), {
+      call: { card: 'terminal', title: 'Read src/a.ts', activity: 'Reading src/a.ts\nignored' },
+    })
+    expect(card.activity).toBe('Reading src/a.ts ignored')
+
+    const refined = buildToolCard(node(), {
+      call: { card: 'terminal', title: 'Read src/a.ts', activity: 'Reading src/a.ts' },
+      result: { card: 'terminal', activity: 'Finished reading src/a.ts' },
+    })
+    expect(refined.activity).toBe('Finished reading src/a.ts')
+  })
+
   it('shows command, cwd, exit code, and the output tail', () => {
     const presentation: ToolPresentation = {
       call: { card: 'terminal', title: 'pnpm vitest run', cwd: '/repo', description: 'run tests' },

@@ -18,7 +18,11 @@ export function WorkingLine({ vm, theme }: {
   theme: Theme
 }): React.ReactElement | null {
   if (vm.workingLine === undefined) return null
-  return <Text {...themed(theme, 'tool')}>{vm.workingLine}</Text>
+  // A stall is not an error — the model is slow, not broken — so it takes the
+  // warning tone rather than the red one an actual failure gets.
+  return <Text {...themed(theme, vm.workingLine.stalled ? 'warning' : 'tool')}>
+    {vm.workingLine.text}
+  </Text>
 }
 
 export function TodoPanel({ vm, theme }: {

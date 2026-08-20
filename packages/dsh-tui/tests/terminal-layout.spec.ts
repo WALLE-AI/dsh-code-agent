@@ -14,7 +14,7 @@ function frameRows(layout: ReturnType<typeof terminalLayout>, input: {
   notice?: boolean
   error?: boolean
 }): number {
-  let total = 1 + Number(layout.showHeader) + Number(layout.showStatus) + layout.todoRows
+  let total = 1 + Number(layout.showStatus) + layout.todoRows
     + Number(layout.showStatus && layout.showContextBar) + Number(layout.showWorking)
     + layout.viewportRows
   // A separating blank row, the title, the preview, and one row per answer.
@@ -85,7 +85,7 @@ describe('terminal layout', () => {
       commandCount: 3,
       notice: false,
       error: false,
-    })).toMatchObject({ viewportRows: 15, showHeader: true, showStatus: true })
+    })).toMatchObject({ viewportRows: 16, showStatus: true })
   })
 
   it('compresses question details and option windows at 80x12 height', () => {
@@ -100,10 +100,9 @@ describe('terminal layout', () => {
       error: false,
     })).toMatchObject({
       compact: true,
-      viewportRows: 3,
+      viewportRows: 4,
       optionWindowSize: 1,
       showQuestionDetail: false,
-      showHeader: true,
       showStatus: true,
     })
   })
@@ -117,7 +116,7 @@ describe('terminal layout', () => {
       commandCount: 0,
       notice: true,
       error: true,
-    })).toMatchObject({ showNotice: false, viewportRows: 5 })
+    })).toMatchObject({ showNotice: false, viewportRows: 6 })
   })
 
   it('drops framing before active question controls at extreme height', () => {
@@ -132,8 +131,7 @@ describe('terminal layout', () => {
       error: false,
     })).toMatchObject({
       viewportRows: 1,
-      // With the headroom reserved, the header goes too at this height.
-      showHeader: false,
+      // With the headroom reserved, the status chrome goes at this height.
       showStatus: false,
       showQuestionDetail: false,
     })

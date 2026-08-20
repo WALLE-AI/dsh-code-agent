@@ -139,7 +139,12 @@ export interface QuestionPrompt {
   readonly questions: readonly QuestionItem[]
 }
 
-export interface ToolRenderIntent { readonly card: string; readonly [key: string]: unknown }
+export interface ToolRenderIntent {
+  readonly card: string
+  /** Present-tense description shown while the call is running. */
+  readonly activity?: string
+  readonly [key: string]: unknown
+}
 
 export interface ToolPresentation {
   readonly call: ToolRenderIntent
@@ -171,6 +176,11 @@ export interface TuiSnapshot {
   model?: string
   /** Which turn is in flight and when it began, for the working line. */
   turn: { readonly index: number; readonly startedAtMs: number }
+  /**
+   * When the transcript last grew, so the working line can say how long the
+   * model has been silent. Zero until the first row arrives.
+   */
+  outputAtMs: number
   /** True when retained history exists above the rendered window. */
   hasMoreHistory: boolean
   approval?: ApprovalPrompt

@@ -9,7 +9,8 @@
 
 import React from 'react'
 import { Box, Text } from 'ink'
-import { KEY_BINDINGS } from '../keymap.ts'
+import { keyBindingDocs } from '../keymap.ts'
+import { DEFAULT_KEYMAP, type Keymap } from '../keybindings.ts'
 import { buildOverlay, fitHint, helpRows } from '../overlay.ts'
 import { truncateToWidth } from '../terminal-text.ts'
 import type { Theme } from '../theme.ts'
@@ -18,12 +19,15 @@ import { OverlayList, OverlayRows } from '../ui/list.tsx'
 import { buildBrowserView, SPLIT_MIN_COLUMNS, type ViewModel } from '../view-model.ts'
 import type { BrowserState } from '../session-browser.ts'
 
-export function HelpScreen({ theme, rows, columns }: {
+export function HelpScreen({ theme, rows, columns, keys = DEFAULT_KEYMAP }: {
   theme: Theme
   rows: number
   columns: number
+  keys?: Keymap
 }): React.ReactElement {
-  const sheet = buildOverlay(helpRows(KEY_BINDINGS), 0, {
+  // Built from the effective bindings, so a rebound key shows its new chord
+  // here without anything else having to be told about it.
+  const sheet = buildOverlay(helpRows(keyBindingDocs(keys)), 0, {
     marker: ' ',
     title: 'Shortcuts',
     hint: fitHint(['any key to close', 'Esc'], Math.max(0, columns - 12)),
