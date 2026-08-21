@@ -29,7 +29,7 @@ export interface KeyEvent {
  * caller decides which, mirroring the modal precedence of the frame itself.
  */
 export type UiSurface =
-  | 'approval' | 'approval-feedback' | 'question' | 'palette' | 'help' | 'browser'
+  | 'approval' | 'approval-feedback' | 'question' | 'palette' | 'help' | 'browser' | 'model-picker'
   | 'completion' | 'transcript-screen' | 'transcript' | 'composer'
 
 export type UiAction =
@@ -74,6 +74,12 @@ export type UiAction =
   | { readonly kind: 'browser-backspace' }
   | { readonly kind: 'browser-accept' }
   | { readonly kind: 'browser-escape' }
+  | { readonly kind: 'model-move'; readonly delta: -1 | 1 }
+  | { readonly kind: 'model-page'; readonly delta: -1 | 1 }
+  | { readonly kind: 'model-type'; readonly text: string }
+  | { readonly kind: 'model-backspace' }
+  | { readonly kind: 'model-accept' }
+  | { readonly kind: 'model-escape' }
   | { readonly kind: 'toggle-focus' }
   | { readonly kind: 'focus-composer' }
   | { readonly kind: 'scroll'; readonly direction: -1 | 1; readonly page: boolean }
@@ -186,6 +192,7 @@ function surfaceKey(
     // Any key dismisses the help sheet; it is a reference card, not a mode.
     case 'help': return { kind: 'close-help' }
     case 'browser': return browserKey(key, keys) ?? 'swallow'
+    case 'model-picker': return modelPickerKey(key, keys) ?? 'swallow'
     case 'completion': return completionKey(key, context, keys)
     case 'transcript-screen': return transcriptScreenKey(key, context, keys)
     default: return openKey(surface, key, context, keys) ?? 'pass'
@@ -301,6 +308,18 @@ function browserKey(key: KeyEvent, keys: Keymap): UiAction | undefined {
   // Everything else is the query: the list is the search result, so there is no
   // mode to enter first.
   if (isPrintable(key)) return { kind: 'browser-type', text: key.input }
+  return undefined
+}
+
+function modelPickerKey(key: KeyEvent, keys: Keymap): UiAction | undefined {
+  if (keys.bound('browser:escape', key)) return { kind: 'model-escape' }
+  if (keys.bound('browser:previous', key)) return { kind: 'model-move', delta: -1 }
+  if (keys.bound('browser:next', key)) return { kind: 'model-move', delta: 1 }
+  if (keys.bound('browser:page-up', key)) return { kind: 'model-page', delta: -1 }
+  if (keys.bound('browser:page-down', key)) return { kind: 'model-page', delta: 1 }
+  if (key.name === 'backspace' || key.name === 'delete') return { kind: 'model-backspace' }
+  if (keys.bound('browser:accept', key) && isPlainReturn(key)) return { kind: 'model-accept' }
+  if (isPrintable(key)) return { kind: 'model-type', text: key.input }
   return undefined
 }
 

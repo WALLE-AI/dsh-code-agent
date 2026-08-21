@@ -65,6 +65,11 @@ dshcodecli --resume-select
 dshcodecli --permission read-only "review current changes"
 ```
 
+交互模式中，`/model` 打开模型选择器，`/model PROVIDER/MODEL[:EFFORT]` 从下一轮切换
+当前 Session，`/model save PROVIDER/MODEL[:EFFORT]` 额外保存未来 Session 默认值。`/status`、
+`/context`、`/doctor` 和 `/config` 提供只读运行信息；`/commands` 打开 Ctrl+P 命令面板；
+`/clear`、`/exit` 分别是 `/new`、`/quit` 的安全别名。
+
 `dshcodecli`（`bin/dshcodecli.mjs`，`pnpm link --global` 后任意目录可用）是唯一入口，
 `pnpm tui` 与 `scripts/run-tui.sh` 已经变成它的薄别名。命令在本仓库内解析到时走 dev 模式：
 以 `--conditions=development` 让 profile 解析 `src/*.ts`；装到别处则找已安装的 `dsh`

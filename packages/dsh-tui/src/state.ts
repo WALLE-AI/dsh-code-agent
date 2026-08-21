@@ -75,6 +75,9 @@ export class TuiStore {
     activity: EMPTY_ACTIVITY,
     counters: EMPTY_COUNTERS,
     sessions: [],
+    modelPickerOpen: false,
+    modelPickerLoading: false,
+    commandPaletteRequest: 0,
     files: [],
     history: [],
     workspace: {},
@@ -189,6 +192,22 @@ export class TuiStore {
 
   setSessions(sessions: readonly TuiSessionSummary[]): void {
     this.publish({ ...this.value, sessions: Object.freeze(structuredClone(sessions)) })
+  }
+
+  setModelPicker(open: boolean, loading = false): void {
+    this.publish({ ...this.value, modelPickerOpen: open, modelPickerLoading: loading })
+  }
+
+  setModelDirectory(directory: TuiSnapshot['modelDirectory']): void {
+    this.publish({
+      ...this.value,
+      ...(directory === undefined ? {} : { modelDirectory: Object.freeze(structuredClone(directory)) }),
+      modelPickerLoading: false,
+    })
+  }
+
+  requestCommandPalette(): void {
+    this.publish({ ...this.value, commandPaletteRequest: this.value.commandPaletteRequest + 1 })
   }
 
   setFiles(files: readonly FileCandidate[]): void {

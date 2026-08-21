@@ -26,6 +26,10 @@ import {
   backspaceBrowser, escapeBrowser, moveBrowser, typeBrowser, emptyBrowser,
   type BrowserState,
 } from './session-browser.ts'
+import {
+  acceptModelPicker, backspaceModelPicker, modelPickerRows, moveModelPicker, typeModelPicker,
+  type ModelPickerState,
+} from './model-picker.ts'
 import { scrollViewport, type ViewportState } from './viewport.ts'
 import { shortcutApprovalChoice } from './approval-options.ts'
 import { acceptCompletion, type ViewModel } from './view-model.ts'
@@ -44,6 +48,7 @@ export interface DispatchSetters {
   setApprovalFeedback: (next: string | undefined) => void
   setHelpOpen: (open: boolean) => void
   setBrowser: (update: (current: BrowserState | undefined) => BrowserState | undefined) => void
+  setModelPicker: (update: (current: ModelPickerState | undefined) => ModelPickerState | undefined) => void
   setDismissed: (start: number | undefined) => void
 }
 
@@ -57,6 +62,7 @@ export interface DispatchContext extends DispatchSetters {
   readonly actions: TuiActions
   readonly vm: ViewModel
   readonly browser: BrowserState | undefined
+  readonly modelPicker: ModelPickerState | undefined
   /** Read back for the "already at the oldest row?" test before paging. */
   readonly viewport: ViewportState
 }
@@ -269,6 +275,31 @@ export function dispatchAction(action: UiAction, context: DispatchContext): void
       if (context.browser === undefined) return
       const next = escapeBrowser(context.browser)
       return context.setBrowser(() => next.close ? undefined : next.state)
+    }
+    case 'model-move': return context.setModelPicker(current => current === undefined
+      ? current
+      : moveModelPicker(current, modelPickerRows(state.modelDirectory, current), action.delta))
+    case 'model-page': return context.setModelPicker(current => current === undefined
+      ? current
+      : moveModelPicker(current, modelPickerRows(state.modelDirectory, current),
+        action.delta * Math.max(1, vm.layout.viewportRows - 2)))
+    case 'model-type': return context.setModelPicker(current => current === undefined
+      ? current : typeModelPicker(current, action.text))
+    case 'model-backspace': return context.setModelPicker(current => current === undefined
+      ? current : backspaceModelPicker(current))
+    case 'model-accept': {
+      if (context.modelPicker === undefined) return
+      const accepted = acceptModelPicker(state.modelDirectory, context.modelPicker)
+      context.setModelPicker(() => accepted.state)
+      if (accepted.selection !== undefined) actions.selectModel(accepted.selection)
+      return
+    }
+    case 'model-escape': {
+      if (context.modelPicker?.effortFor !== undefined) {
+        return context.setModelPicker(() => ({ query: '', resuming: false }))
+      }
+      actions.closeModelPicker()
+      return context.setModelPicker(() => undefined)
     }
     // Only two panes exist: the transcript and the composer.
     case 'toggle-focus':

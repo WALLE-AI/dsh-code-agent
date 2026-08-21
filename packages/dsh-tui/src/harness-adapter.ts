@@ -20,6 +20,10 @@ import type {
   TuiCommandExecution,
 } from './contracts.ts'
 import type { TuiSessionSummary } from './session-selector.ts'
+import {
+  formatModelSelection, modelSelectionFromEvents, parseModelCommand,
+  type TuiModelDirectory, type TuiModelSelection,
+} from './model-selection.ts'
 import { presentTool } from './tool-presentation.ts'
 
 interface HarnessContext {
@@ -55,7 +59,24 @@ interface HarnessServices {
     create(options: Record<string, unknown>): Promise<AgentHandle>
     resume(options: Record<string, unknown>): Promise<AgentHandle>
   }
-  defaultModel: { currentSelection(): { provider: string; model: string } }
+  defaultModel: {
+    currentSelection(): TuiModelSelection
+    saveSelection(selection: TuiModelSelection): Promise<void>
+  }
+  llm: {
+    listProviders(): readonly { id: string; name: string }[]
+    listModels(provider: string): Promise<readonly { provider: string; id: string; name: string; description?: string }[]>
+    resolveModelInfo(provider: string, model: string, signal?: AbortSignal): Promise<{
+      provider: string
+      id: string
+      name: string
+      description?: string
+      reasoning?: {
+        efforts: readonly { id: string; name: string; description?: string }[]
+        defaultEffort?: string
+      }
+    }>
+  }
   sessions: { flush(session: AgentLike['session']): Promise<boolean> }
   projections: {
     snapshot(session: AgentLike['session']): { asOfSeq: number; values: Record<string, unknown> }
@@ -66,6 +87,15 @@ interface HarnessServices {
   commands: {
     list(agent: AgentLike): readonly TuiCommandDescriptor[]
     execute(agent: AgentLike, line: string, signal: AbortSignal): Promise<TuiCommandExecution | undefined>
+    register(definition: {
+      name: string
+      description: string
+      input?: { hint: string }
+      handler(invocation: { agent: AgentLike; rawInput: string }): Promise<{
+        kind: 'success' | 'error'
+        text?: string
+      }> | { kind: 'success' | 'error'; text?: string }
+    }): () => void
   }
   tools: {
     get(name: string, scope?: AgentLike): {
@@ -159,13 +189,14 @@ function services(ctx: HarnessContext): HarnessServices {
   const projections = ctx.get('sessionProjections') as HarnessServices['projections'] | undefined
   const commands = ctx.get('commands') as HarnessServices['commands'] | undefined
   const tools = ctx.get('tools') as HarnessServices['tools'] | undefined
+  const llm = ctx.get('llm') as HarnessServices['llm'] | undefined
   if (agents === undefined || defaultModel === undefined || sessions === undefined || projections === undefined
-    || commands === undefined || tools === undefined) {
+    || commands === undefined || tools === undefined || llm === undefined) {
     throw new Error(
-      'Harness services did not settle: agents, agentDefaultModel, sessions, sessionProjections, commands, or tools is missing',
+      'Harness services did not settle: agents, agentDefaultModel, llm, sessions, sessionProjections, commands, or tools is missing',
     )
   }
-  return { agents, defaultModel, sessions, projections, commands, tools }
+  return { agents, defaultModel, llm, sessions, projections, commands, tools }
 }
 
 function textOf(content: unknown): string {
@@ -180,6 +211,15 @@ function textOf(content: unknown): string {
 
 interface RuntimeSession {
   events: RuntimeEvent[]
+}
+
+interface TuiModelSelectionRef {
+  current: TuiModelSelection
+  assembled?: TuiModelSelection
+}
+
+interface TuiModelState {
+  ref?: TuiModelSelectionRef
 }
 
 function optionalString(value: unknown): string | undefined {
@@ -336,11 +376,55 @@ function userMessage(runtime: Awaited<ReturnType<typeof loadRuntime>>, text: str
 
 function setupAgent(
   runtime: Awaited<ReturnType<typeof loadRuntime>>,
-  selection: unknown,
+  selection: TuiModelSelection,
+  explicitOverride: boolean,
+  services: HarnessServices,
+  modelState: TuiModelState,
   hooks: HarnessHooks,
 ): (agentCtx: AgentContext) => void {
   return (agentCtx) => {
-    runtime.installModelSelection(agentCtx, { current: selection, assembled: undefined })
+    const restored = explicitOverride || agentCtx.agent === undefined
+      ? selection
+      : modelSelectionFromEvents(agentCtx.agent.session.events, selection)
+    const ref: TuiModelSelectionRef = { current: restored }
+    modelState.ref = ref
+    runtime.installModelSelection(agentCtx, ref)
+    hooks.model(restored)
+    const scopedCommands = agentCtx.get('commands') as HarnessServices['commands'] | undefined
+    if (scopedCommands === undefined) throw new Error('Harness commands service is missing in agent setup')
+    scopedCommands.register({
+      name: 'model',
+      description: 'View or switch the model for this session',
+      input: { hint: '[info|default|save <route>|<route>]' },
+      handler: async ({ rawInput }) => {
+        try {
+          const command = parseModelCommand(rawInput, ref.current)
+          if (command.kind === 'picker') {
+            return { kind: 'error', text: 'Use bare /model in the interactive TUI to open the model picker.' }
+          }
+          if (command.kind === 'info') {
+            return { kind: 'success', text: `Current model: ${formatModelSelection(ref.current)}` }
+          }
+          const next = command.kind === 'default' ? services.defaultModel.currentSelection() : command.selection
+          const provider = services.llm.listProviders().find(item => item.id === next.provider)
+          if (provider === undefined) return { kind: 'error', text: `Unknown model provider: ${next.provider}` }
+          const resolved = await services.llm.resolveModelInfo(next.provider, next.model)
+          if (next.reasoningEffort !== undefined
+            && resolved.reasoning?.efforts.some(effort => effort.id === next.reasoningEffort) !== true) {
+            return { kind: 'error', text: `Model ${next.provider}/${next.model} does not support effort ${next.reasoningEffort}` }
+          }
+          if (command.kind === 'save') await services.defaultModel.saveSelection({ ...next })
+          ref.current = { ...next }
+          hooks.model(ref.current)
+          return {
+            kind: 'success',
+            text: `Model set to ${formatModelSelection(ref.current)}${command.kind === 'save' ? ' and saved as default' : ''}`,
+          }
+        } catch (error) {
+          return { kind: 'error', text: error instanceof Error ? error.message : String(error) }
+        }
+      },
+    })
     const questions = agentCtx.get('userQuestions') as {
       registerProvider(provider: { ask(request: {
         questions: readonly QuestionItem[]
@@ -405,6 +489,7 @@ async function controlledHandle(
   runtime: Awaited<ReturnType<typeof loadRuntime>>,
   services: HarnessServices,
   hooks: HarnessHooks,
+  modelState: TuiModelState,
 ): Promise<ControlledAgentHandle> {
   const { agent } = upstreamHandle
   const readProjections = (): RegisteredProjectionSnapshot => {
@@ -447,6 +532,49 @@ async function controlledHandle(
     flush: () => services.sessions.flush(agent.session),
     listCommands: () => services.commands.list(agent),
     executeCommand: (line, signal) => services.commands.execute(agent, line, signal),
+    currentModel: () => {
+      if (modelState.ref === undefined) throw new Error('model selection was not installed for this Agent')
+      return { ...modelState.ref.current }
+    },
+    listModels: async (signal) => {
+      if (modelState.ref === undefined) throw new Error('model selection was not installed for this Agent')
+      const listed = await Promise.all(services.llm.listProviders().map(async (provider) => {
+        try {
+          const models = await services.llm.listModels(provider.id)
+          const resolved = await Promise.all(models.map(model =>
+            services.llm.resolveModelInfo(provider.id, model.id, signal)))
+          return {
+            kind: 'provider' as const,
+            provider: {
+              id: provider.id,
+              name: provider.name,
+              models: resolved.map(model => ({
+                id: model.id,
+                name: model.name,
+                ...(model.description === undefined ? {} : { description: model.description }),
+                ...(model.reasoning === undefined ? {} : { reasoning: {
+                  efforts: model.reasoning.efforts.map(effort => ({ ...effort })),
+                  ...(model.reasoning.defaultEffort === undefined
+                    ? {}
+                    : { defaultEffort: model.reasoning.defaultEffort }),
+                } }),
+              })),
+            },
+          }
+        } catch (error) {
+          return {
+            kind: 'failure' as const,
+            failure: { id: provider.id, name: provider.name, message: error instanceof Error ? error.message : String(error) },
+          }
+        }
+      }))
+      if (signal?.aborted === true) throw signal.reason
+      return {
+        current: { ...modelState.ref.current },
+        providers: listed.flatMap(item => item.kind === 'provider' ? [item.provider] : []),
+        failures: listed.flatMap(item => item.kind === 'failure' ? [item.failure] : []),
+      } satisfies TuiModelDirectory
+    },
     presentTool: node => presentTool(node, services.tools.get(node.name, agent)),
     dispose: () => disposeHarnessHandle(disposeProjection, upstreamHandle),
   }
@@ -472,8 +600,8 @@ export async function createHarnessAgentController(
   // The resolved selection, not the flag: an unset --model still has an answer,
   // and it is the Harness's, not ours to guess.
   const selection = { ...harnessServices.defaultModel.currentSelection(), ...override }
-  hooks.model(selection)
-  const setup = setupAgent(runtime, selection, hooks)
+  const modelState: TuiModelState = {}
+  const setup = setupAgent(runtime, selection, override !== undefined, harnessServices, modelState, hooks)
   const options = (identity: Record<string, unknown>): Record<string, unknown> => ({
     ...identity,
     agentOptions: { provider: selection.provider, model: selection.model },
@@ -483,10 +611,10 @@ export async function createHarnessAgentController(
     create: async (sessionId) => controlledHandle(await harnessServices.agents.create(options({
       sessionId: runtime.SessionId(sessionId),
       meta: { cwd: process.cwd() },
-    })), runtime, harnessServices, hooks),
+    })), runtime, harnessServices, hooks, modelState),
     resume: async (sessionId) => controlledHandle(await harnessServices.agents.resume(options({
       resumeSessionId: runtime.SessionId(sessionId),
-    })), runtime, harnessServices, hooks),
+    })), runtime, harnessServices, hooks, modelState),
   }
   return new AgentController(port)
 }

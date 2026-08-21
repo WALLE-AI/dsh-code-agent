@@ -26,6 +26,7 @@ import {
 } from './harness-adapter.ts'
 import { formatSessionRow, resolveSessionSelection, selectableSessions } from './session-selector.ts'
 import { emptyBrowser } from './session-browser.ts'
+import { formatModelSelection, type TuiModelSelection } from './model-selection.ts'
 import { exitCodeFor, ShutdownCoordinator } from './shutdown.ts'
 import { TuiStore } from './state.ts'
 import { detectTerminal } from './terminal-capabilities.ts'
@@ -34,7 +35,7 @@ import { listWorkspaceFiles, type DirectoryEntry } from './workspace-files.ts'
 
 export const name = 'tui-runner'
 export const inject = [
-  'agentDefaultModel', 'agents', 'sessions', 'sessionProjections', 'sessionQuery',
+  'agentDefaultModel', 'agents', 'llm', 'sessions', 'sessionProjections', 'sessionQuery',
   'tools', 'commands', 'approval', 'userQuestions',
 ]
 
@@ -287,6 +288,7 @@ async function run(ctx: HarnessContext, config: Config, exit: (code: number) => 
   let closing = false
   let finishInteractive = (): void => {}
   let activeController: AgentController | undefined
+  let modelDirectoryLoad: AbortController | undefined
   let dangerConfirmation: string | undefined
   let pendingSwitch: HarnessRunRequest | undefined
   let submissions = Promise.resolve()
@@ -359,6 +361,28 @@ async function run(ctx: HarnessContext, config: Config, exit: (code: number) => 
       .map(entry => ({ name: entry.name, directory: entry.isDirectory() }))
   }
 
+  const loadModelDirectory = (): void => {
+    const controller = activeController
+    if (controller === undefined) return store.setError('session is not ready for model selection')
+    modelDirectoryLoad?.abort()
+    const load = new AbortController()
+    modelDirectoryLoad = load
+    store.setError(undefined)
+    store.setModelPicker(true, true)
+    void controller.listModels(load.signal)
+      .then(directory => {
+        if (modelDirectoryLoad === load && activeController === controller) {
+          store.setModelDirectory(directory)
+        }
+      })
+      .catch((error: unknown) => {
+        if (load.signal.aborted) return
+        store.setModelPicker(false)
+        store.setError(error instanceof Error ? error.message : String(error))
+      })
+      .finally(() => { if (modelDirectoryLoad === load) modelDirectoryLoad = undefined })
+  }
+
   const actions: TuiActions = {
     cancel: () => { void shutdown.request('cancel') },
     decideApproval: (allowed) => {
@@ -396,6 +420,35 @@ async function run(ctx: HarnessContext, config: Config, exit: (code: number) => 
       diagnostics.record('session-switch', { kind: 'picker' })
       finishInteractive()
     },
+    listModels: () => { loadModelDirectory() },
+    closeModelPicker: () => {
+      modelDirectoryLoad?.abort()
+      modelDirectoryLoad = undefined
+      store.setModelPicker(false)
+    },
+    selectModel: (selection: TuiModelSelection) => {
+      const controller = activeController
+      if (closing || controller === undefined) return
+      modelDirectoryLoad?.abort()
+      modelDirectoryLoad = undefined
+      store.setModelPicker(false)
+      submissions = submissions.then(async () => {
+        const execution = await controller.executeCommand(
+          `/model ${formatModelSelection(selection)}`,
+          new AbortController().signal,
+        )
+        if (execution === undefined) throw new Error('Harness model command is unavailable')
+        if (execution.result.kind === 'error') throw new Error(execution.result.text)
+        if (!await controller.flush()) throw new Error('model selection was not persisted')
+        store.pushNotice({
+          key: ACTION_NOTICE,
+          text: execution.result.text ?? `Model set to ${formatModelSelection(selection)}`,
+          priority: 'immediate',
+        })
+      }).catch((error: unknown) => {
+        store.setError(error instanceof Error ? error.message : String(error))
+      })
+    },
     openLocation: (location) => {
       try {
         store.pushNotice({
@@ -428,8 +481,8 @@ async function run(ctx: HarnessContext, config: Config, exit: (code: number) => 
       submissions = submissions.then(async () => {
         store.setError(undefined)
         store.setNotice(undefined)
-        const line = text.trim()
-        if (line === '/quit') return void shutdown.request('quit')
+        let line = text.trim()
+        if (line === '/quit' || line === '/exit') return void shutdown.request('quit')
         if (line === '/help') {
           const names = store.snapshot().commands.map(command => `/${command.name}`).join(', ')
           // A reference list is read, not glanced at: it holds the row longer
@@ -449,6 +502,82 @@ async function run(ctx: HarnessContext, config: Config, exit: (code: number) => 
             timeoutMs: 20_000,
           })
         }
+        if (line === '/model') return loadModelDirectory()
+        if (line === '/status') {
+          const snapshot = store.snapshot()
+          return store.pushNotice({
+            key: ACTION_NOTICE,
+            text: [
+              `Session ${activeSessionId ?? 'starting'}`,
+              `model ${snapshot.model ?? formatModelSelection(controller.currentModel())}`,
+              `permission ${snapshot.activity.permission?.current ?? 'default'}`,
+              `workspace ${workspace}`,
+              `status ${controller.status ?? 'starting'}`,
+            ].join(' · '),
+            priority: 'immediate',
+            timeoutMs: 20_000,
+          })
+        }
+        if (line === '/commands') {
+          store.requestCommandPalette()
+          return
+        }
+        if (line === '/permissions') {
+          const permission = store.snapshot().activity.permission
+          const options = permission?.options.map(option => option.value).join(', ') ?? 'unavailable'
+          return store.pushNotice({
+            key: ACTION_NOTICE,
+            text: `Permission ${permission?.current ?? 'default'} · available: ${options}`,
+            priority: 'immediate',
+            timeoutMs: 20_000,
+          })
+        }
+        if (line === '/context') {
+          const { context, tokens } = store.snapshot().activity
+          const usage = context === undefined
+            ? 'context unavailable'
+            : `context ${context.tokens ?? '?'} / ${context.window ?? '?'} tokens${context.percent === undefined ? '' : ` (${String(context.percent)}%)`}`
+          const totals = tokens === undefined
+            ? 'usage unavailable'
+            : `input ${String(tokens.input)} · output ${String(tokens.output)}${tokens.cacheHitPercent === undefined ? '' : ` · cache hit ${String(tokens.cacheHitPercent)}%`}`
+          return store.pushNotice({
+            key: ACTION_NOTICE,
+            text: `${usage} · ${totals}`,
+            priority: 'immediate',
+            timeoutMs: 20_000,
+          })
+        }
+        if (line === '/doctor') {
+          const snapshot = store.snapshot()
+          const providers = snapshot.modelDirectory?.providers.length
+          return store.pushNotice({
+            key: ACTION_NOTICE,
+            text: [
+              `TTY ${snapshot.interactive ? 'interactive' : 'unavailable'}`,
+              `workspace ${workspace}`,
+              `session ${activeSessionId ?? 'starting'}`,
+              `model ${snapshot.model ?? formatModelSelection(controller.currentModel())}`,
+              providers === undefined ? 'model catalog not loaded' : `${String(providers)} model providers loaded`,
+              `persistence ${activeSessionId === undefined ? 'attaching' : 'attached'}`,
+            ].join(' · '),
+            priority: 'immediate',
+            timeoutMs: 20_000,
+          })
+        }
+        if (line === '/config') {
+          const snapshot = store.snapshot()
+          return store.pushNotice({
+            key: ACTION_NOTICE,
+            text: [
+              `DSH_HOME ${dshHome}`,
+              `keybindings ${join(dshHome, 'keybindings.json')}`,
+              `model ${snapshot.model ?? formatModelSelection(controller.currentModel())}`,
+              `permission ${snapshot.activity.permission?.current ?? config.permission ?? 'default'}`,
+            ].join(' · '),
+            priority: 'immediate',
+            timeoutMs: 20_000,
+          })
+        }
         if (line === '/mouse') {
           // Off hands the wheel back to the terminal — scrollback and drag-select
           // work as usual, and the transcript pages with PgUp/PgDn only.
@@ -461,7 +590,7 @@ async function run(ctx: HarnessContext, config: Config, exit: (code: number) => 
             priority: 'immediate',
           })
         }
-        if (line === '/new') {
+        if (line === '/new' || line === '/clear') {
           pendingSwitch = { task: '' }
           diagnostics.record('session-switch', { kind: 'new' })
           return finishInteractive()
@@ -478,6 +607,9 @@ async function run(ctx: HarnessContext, config: Config, exit: (code: number) => 
           diagnostics.record('session-switch', { kind: 'resume' })
           return finishInteractive()
         }
+        if (line.startsWith('/permissions ')) {
+          line = `/permission ${line.slice('/permissions '.length).trim()}`
+        }
         // Entering the unrestricted preset always takes a second, explicit step.
         if (line.startsWith('/permission') && line.includes(DANGER_PRESET) && dangerConfirmation !== line) {
           dangerConfirmation = line
@@ -492,7 +624,7 @@ async function run(ctx: HarnessContext, config: Config, exit: (code: number) => 
           })
         }
         dangerConfirmation = undefined
-        const result = await new AgentInputRouter(controller).submit(text)
+        const result = await new AgentInputRouter(controller).submit(line)
         if (result.kind === 'unknown-command') return store.setError(result.text)
         if (result.kind === 'command' && result.execution.result.kind === 'error') {
           return store.setError(result.execution.result.text)
@@ -605,6 +737,14 @@ async function run(ctx: HarnessContext, config: Config, exit: (code: number) => 
         { name: 'help', description: 'List available commands' },
         { name: 'sessions', description: 'List resumable sessions' },
         { name: 'new', description: 'Flush this session and start a fresh one' },
+        { name: 'clear', description: 'Start a fresh session (alias for /new)' },
+        { name: 'model', description: 'View or switch the model', input: { hint: '[info|default|save <route>|<route>]' } },
+        { name: 'status', description: 'Show session, model, permission, and workspace status' },
+        { name: 'permissions', description: 'Show available permission presets' },
+        { name: 'commands', description: 'Open the command palette' },
+        { name: 'context', description: 'Show context-window and token usage' },
+        { name: 'doctor', description: 'Check the active TUI session and runtime' },
+        { name: 'config', description: 'Show effective non-secret configuration' },
         {
           name: 'resume',
           description: 'Flush this session and resume another',
@@ -612,6 +752,7 @@ async function run(ctx: HarnessContext, config: Config, exit: (code: number) => 
         },
         { name: 'mouse', description: 'Toggle whether the wheel scrolls the transcript' },
         { name: 'quit', description: 'Flush and exit this TUI session' },
+        { name: 'exit', description: 'Flush and exit (alias for /quit)' },
       ]
       const reserved = new Set(local.map(command => command.name))
       store.setCommands([

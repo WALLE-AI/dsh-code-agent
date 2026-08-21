@@ -9,6 +9,7 @@ import type {
   TuiCommandDescriptor,
   TuiCommandExecution,
 } from './contracts.ts'
+import type { TuiModelDirectory, TuiModelSelection } from './model-selection.ts'
 
 export interface ControlledSession {
   readonly id: string
@@ -27,6 +28,8 @@ export interface ControlledAgentHandle {
   flush(): Promise<boolean>
   listCommands(): readonly TuiCommandDescriptor[]
   executeCommand(line: string, signal: AbortSignal): Promise<TuiCommandExecution | undefined>
+  currentModel(): TuiModelSelection
+  listModels(signal?: AbortSignal): Promise<TuiModelDirectory>
   presentTool(node: ToolNode): ToolPresentation
   dispose(): Promise<void>
 }
@@ -68,6 +71,10 @@ export class AgentController {
   listCommands(): readonly TuiCommandDescriptor[] { return this.active('listCommands').listCommands() }
   executeCommand(line: string, signal: AbortSignal): Promise<TuiCommandExecution | undefined> {
     return this.active('executeCommand').executeCommand(line, signal)
+  }
+  currentModel(): TuiModelSelection { return this.active('currentModel').currentModel() }
+  listModels(signal?: AbortSignal): Promise<TuiModelDirectory> {
+    return this.active('listModels').listModels(signal)
   }
   presentTool(node: ToolNode): ToolPresentation { return this.active('presentTool').presentTool(node) }
 

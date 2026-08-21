@@ -44,6 +44,7 @@ import {
   browserEmptyText, browserFocusIndex, browserMatches, type BrowserState,
 } from './session-browser.ts'
 import { formatSessionRow } from './session-selector.ts'
+import type { ModelPickerState } from './model-picker.ts'
 
 /** Preview rows taken from the pending call's own card. */
 export const APPROVAL_PREVIEW_ROWS = 3
@@ -73,6 +74,7 @@ export interface UiState {
   readonly approvalFeedback?: string
   readonly helpOpen: boolean
   readonly browser?: BrowserState
+  readonly modelPicker?: ModelPickerState
   /** Token start the completion list was dismissed for, if any. */
   readonly dismissed?: number
 }
@@ -107,6 +109,7 @@ export interface ViewModel {
   readonly surfaces: readonly UiSurface[]
   readonly modalFree: boolean
   readonly browserOpen: boolean
+  readonly modelPickerOpen: boolean
   readonly helpVisible: boolean
   readonly paletteOpen: boolean
   readonly composerVisible: boolean
@@ -205,10 +208,11 @@ export function buildViewModel(input: ViewModelInput): ViewModel {
   // A screen replaces the conversation; a prompt still outranks it, because the
   // Agent is blocked until it is answered.
   const browserOpen = ui.browser !== undefined && modalFree
-  const helpVisible = ui.helpOpen && modalFree && !browserOpen
+  const modelPickerOpen = state.modelPickerOpen && ui.modelPicker !== undefined && modalFree
+  const helpVisible = ui.helpOpen && modalFree && !browserOpen && !modelPickerOpen
   const paletteOpen = ui.palette !== undefined && modalFree && !helpVisible
   const composerVisible = state.interactive && modalFree && !paletteOpen
-    && !helpVisible && !browserOpen
+    && !helpVisible && !browserOpen && !modelPickerOpen
 
   // --- completion --------------------------------------------------------
   // Completion works off the caret: a slash command owns the first token, a
@@ -434,7 +438,9 @@ export function buildViewModel(input: ViewModelInput): ViewModel {
     : activeQuestion !== undefined && activeQuestionForm !== undefined
       && questionPrompt !== undefined
       ? 'question'
-      : browserOpen
+      : modelPickerOpen
+        ? 'model-picker'
+        : browserOpen
         ? 'browser'
         : helpVisible
           ? 'help'
@@ -467,6 +473,7 @@ export function buildViewModel(input: ViewModelInput): ViewModel {
     surfaces,
     modalFree,
     browserOpen,
+    modelPickerOpen,
     helpVisible,
     paletteOpen,
     composerVisible,

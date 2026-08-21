@@ -31,6 +31,10 @@ function fixtureHandle(id = 'session-1'): ControlledAgentHandle {
     flush: vi.fn(async () => true),
     listCommands: vi.fn(() => []),
     executeCommand: vi.fn(async () => undefined),
+    currentModel: vi.fn(() => ({ provider: 'p', model: 'm' })),
+    listModels: vi.fn(async () => ({
+      current: { provider: 'p', model: 'm' }, providers: [], failures: [],
+    })),
     presentTool: vi.fn(node => ({ call: { card: 'generic', title: node.name } })),
     dispose: vi.fn(async () => {}),
   }
@@ -54,6 +58,8 @@ describe('AgentController', () => {
     await expect(controller.flush()).resolves.toBe(true)
     expect(controller.listCommands()).toEqual([])
     await expect(controller.executeCommand('/help', new AbortController().signal)).resolves.toBeUndefined()
+    expect(controller.currentModel()).toEqual({ provider: 'p', model: 'm' })
+    await expect(controller.listModels()).resolves.toMatchObject({ providers: [] })
     expect(controller.presentTool({
       id: 'tool:1', kind: 'tool', callId: '1', name: 'read', input: '{}', output: '',
       status: 'pending', firstSeq: 1, lastSeq: 1,

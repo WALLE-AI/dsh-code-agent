@@ -99,7 +99,7 @@ DEEPSEEK_BASE_URL=https://api.deepseek.com
 | 领域 | 能力 |
 |---|---|
 | 启动安全 | 首次进入工作区前确认；拒绝时不启动 Harness；信任记录使用私有权限和原子写入 |
-| 对话 | 无参数交互启动、流式输出、运行中 steering、多轮跟进、草稿历史、会话恢复 |
+| 对话 | 无参数交互启动、流式输出、运行中 steering、多轮跟进、草稿历史、会话恢复、会话级模型切换 |
 | 渲染 | Markdown、代码块、表格、引用、CJK 折行、resize 重排、Unicode/ASCII 降级 |
 | 工具 | run/edit/search/read/web 卡片、diff 着色、长输出折叠、嵌套调用、截断提示 |
 | 权限 | read-only、workspace-write、danger-full-access，以及 fail-closed 审批 |
@@ -124,9 +124,31 @@ DEEPSEEK_BASE_URL=https://api.deepseek.com
 | <code>dshcodecli --diagnostic-log PATH</code> | 写入脱敏 JSONL 诊断日志 |
 | <code>dshcodecli --help</code> | 查看完整帮助 |
 
+## 交互命令
+
+在 composer 中输入 <code>/</code> 可补全命令，<code>/commands</code> 与 Ctrl+P 会打开同一个可搜索命令面板。
+
+| 命令 | 说明 |
+|---|---|
+| <code>/model</code> | 打开可搜索模型选择器；支持 Provider 部分加载失败和 reasoning effort 二级选择 |
+| <code>/model info</code> | 显示当前会话模型 |
+| <code>/model PROVIDER/MODEL[:EFFORT]</code> | 从下一轮开始切换当前会话模型 |
+| <code>/model default</code> | 将当前会话切回已保存的默认模型 |
+| <code>/model save PROVIDER/MODEL[:EFFORT]</code> | 切换当前会话，并保存为未来新会话的默认模型 |
+| <code>/status</code> | 显示 Session、模型、权限、工作区和运行状态 |
+| <code>/context</code> | 显示上下文窗口与 token 使用量 |
+| <code>/permissions</code> | 显示权限预设；<code>/permissions PRESET</code> 是 <code>/permission PRESET</code> 的别名 |
+| <code>/clear</code> | 刷新当前会话并新建会话，是 <code>/new</code> 的别名 |
+| <code>/doctor</code> | 对当前 TTY、工作区、Session、模型目录和持久化状态做只读检查 |
+| <code>/config</code> | 显示不包含凭据的有效配置路径、模型和权限 |
+| <code>/exit</code> | 安全刷新并退出，是 <code>/quit</code> 的别名 |
+
+模型切换不会改变已经开始的请求，只对下一轮生效。普通 <code>/model ROUTE</code> 会作为 Session command
+写入事件日志，因此 <code>--resume</code> 后仍会恢复；只有带 <code>save</code> 的形式会修改未来新 Session 的默认模型。
+
 ## 退出与恢复会话
 
-使用 <code>/quit</code> 正常退出时，TUI 会等待当前任务结束并刷新会话。持久化成功后，终端会显示准确的 Session ID 和恢复命令：
+使用 <code>/quit</code> 或 <code>/exit</code> 正常退出时，TUI 会等待当前任务结束并刷新会话。持久化成功后，终端会显示准确的 Session ID 和恢复命令：
 
 ~~~text
 Session saved: session-...

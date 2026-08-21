@@ -3,12 +3,14 @@
 import type { ActivityCounters, ActivitySummary } from './activity.ts'
 import type { FileCandidate } from './draft-completion.ts'
 import type { TuiSessionSummary } from './session-selector.ts'
+import type { TuiModelDirectory, TuiModelSelection } from './model-selection.ts'
 import type { RowTone } from './styling.ts'
 import type { TranscriptEntry, TranscriptLine } from './transcript-view.ts'
 
 export type {
   ActivityCounters, ActivitySummary, FileCandidate, RowTone,
   TranscriptEntry, TranscriptLine, TuiSessionSummary,
+  TuiModelDirectory, TuiModelSelection,
 }
 
 export type AgentStatus = 'idle' | 'running' | 'closing' | 'starting'
@@ -175,6 +177,11 @@ export interface TuiSnapshot {
   counters: ActivityCounters
   /** Resume candidates, refreshed on demand by the session picker. */
   sessions: readonly TuiSessionSummary[]
+  modelDirectory?: TuiModelDirectory
+  modelPickerOpen: boolean
+  modelPickerLoading: boolean
+  /** Monotonic request used by slash commands to open the existing command palette. */
+  commandPaletteRequest: number
   /** Workspace paths, refreshed on demand while an `@` mention is being typed. */
   files: readonly FileCandidate[]
   /** Drafts submitted in earlier sessions, oldest first. */
@@ -218,6 +225,9 @@ export interface TuiActions {
   listFiles(prefix: string): void
   /** Settle the current session and attach the selected one. */
   resumeSession(sessionId: string): void
+  listModels(): void
+  selectModel(selection: TuiModelSelection): void
+  closeModelPicker(): void
 }
 
 export interface TuiView {

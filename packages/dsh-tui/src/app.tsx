@@ -36,13 +36,14 @@ import { emptyViewport, scrollViewport, syncViewport } from './viewport.ts'
 import { buildViewModel, keyContextOf, type UiState } from './view-model.ts'
 import { nextDisplayedTokenCount } from './working-line.ts'
 import type { BrowserState } from './session-browser.ts'
+import { emptyModelPicker, type ModelPickerState } from './model-picker.ts'
 import { OverlayList } from './ui/list.tsx'
 import { TranscriptRow } from './views/transcript.tsx'
 import { ApprovalPanel } from './views/approval.tsx'
 import { QuestionPanel } from './views/question.tsx'
 import { ComposerView, CompletionList } from './views/composer.tsx'
 import { StatusRegion, TodoPanel, WorkingLine } from './views/status.tsx'
-import { HelpScreen, SessionBrowserScreen } from './views/screens.tsx'
+import { HelpScreen, ModelPickerScreen, SessionBrowserScreen } from './views/screens.tsx'
 import { TranscriptScreen } from './views/transcript-screen.tsx'
 import {
   commitTranscriptSearch, copyTranscriptText, jumpTranscriptMatch, moveTranscriptCursor,
@@ -78,6 +79,7 @@ export function TuiApp({
   const [approvalFeedback, setApprovalFeedback] = useState<string>()
   const [helpOpen, setHelpOpen] = useState(false)
   const [browser, setBrowser] = useState<BrowserState>()
+  const [modelPicker, setModelPicker] = useState<ModelPickerState>()
   const openedInitialBrowser = useRef(false)
   const [dismissed, setDismissed] = useState<number>()
   const [transcriptMode, setTranscriptMode] = useState<TranscriptModeState>()
@@ -93,6 +95,13 @@ export function TuiApp({
     actions.listSessions()
     setBrowser(initialBrowser)
   }, [actions, initialBrowser, state.interactive])
+  useEffect(() => {
+    if (!state.modelPickerOpen) return setModelPicker(undefined)
+    setModelPicker(current => current ?? emptyModelPicker)
+  }, [state.modelPickerOpen])
+  useEffect(() => {
+    if (state.commandPaletteRequest > 0) setPalette({ query: '', index: 0 })
+  }, [state.commandPaletteRequest])
 
   // Rows that can no longer change leave for the terminal's own scrollback; the
   // frame keeps only what is still moving. The split has to survive re-renders,
@@ -115,6 +124,7 @@ export function TuiApp({
     ...(approvalFeedback === undefined ? {} : { approvalFeedback }),
     helpOpen,
     ...(browser === undefined ? {} : { browser }),
+    ...(modelPicker === undefined ? {} : { modelPicker }),
     ...(dismissed === undefined ? {} : { dismissed }),
   }
   // A single clock read keeps every row of one frame consistent with each other.
@@ -287,6 +297,7 @@ export function TuiApp({
       actions,
       vm,
       browser,
+      modelPicker,
       viewport,
       setComposer,
       setViewport,
@@ -299,6 +310,7 @@ export function TuiApp({
       setApprovalFeedback,
       setHelpOpen,
       setBrowser,
+      setModelPicker,
       setDismissed,
     })
   })
@@ -315,6 +327,16 @@ export function TuiApp({
   }
   if (vm.helpVisible) {
     return <HelpScreen theme={theme} rows={rows} columns={columns} keys={keys} />
+  }
+  if (modelPicker !== undefined && vm.modelPickerOpen) {
+    return <ModelPickerScreen
+      {...state.modelDirectory === undefined ? {} : { directory: state.modelDirectory }}
+      state={modelPicker}
+      loading={state.modelPickerLoading}
+      theme={theme}
+      rows={rows}
+      columns={columns}
+    />
   }
   if (browser !== undefined && vm.browserOpen) {
     return <SessionBrowserScreen

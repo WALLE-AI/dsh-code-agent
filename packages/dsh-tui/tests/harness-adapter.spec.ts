@@ -203,6 +203,15 @@ describe('Harness session event normalization', () => {
     const executeCommand = vi.fn(async () => ({
       commandId: 'cmd-1', result: { kind: 'success' as const },
     }))
+    let modelCommand: {
+      handler(invocation: { agent: typeof agent; rawInput: string }): Promise<{
+        kind: 'success' | 'error'; text?: string
+      }> | { kind: 'success' | 'error'; text?: string }
+    } | undefined
+    const registerCommand = vi.fn((definition: typeof modelCommand) => {
+      modelCommand = definition
+      return vi.fn()
+    })
     const getTool = vi.fn(() => ({ presentCall: () => ({ card: 'generic', title: 'Read file' }) }))
     const disposeProjection = vi.fn()
     let projectionListener:
@@ -212,12 +221,22 @@ describe('Harness session event normalization', () => {
       asOfSeq: target.seq - 1,
       values: { 'tool/todo': { items: [{ text: target.id }] } },
     }))
+    const saveSelection = vi.fn(async () => {})
     const serviceValues = new Map<string, unknown>([
       ['loader', { await: vi.fn(async () => {}) }],
       ['agents', { create, resume }],
       ['agentDefaultModel', { currentSelection: () => ({
         provider: 'deepseek-official', model: 'deepseek-v4-pro', reasoningEffort: 'high',
-      }) }],
+      }), saveSelection }],
+      ['llm', {
+        listProviders: () => [{ id: 'deepseek-official', name: 'DeepSeek' }],
+        listModels: vi.fn(async () => [{
+          provider: 'deepseek-official', id: 'deepseek-v4-pro', name: 'DeepSeek V4 Pro',
+        }]),
+        resolveModelInfo: vi.fn(async (provider: string, model: string) => ({
+          provider, id: model, name: model,
+        })),
+      }],
       ['sessions', { flush }],
       ['sessionProjections', {
         snapshot: projectionSnapshot,
@@ -226,7 +245,7 @@ describe('Harness session event normalization', () => {
           return disposeProjection
         },
       }],
-      ['commands', { list: listCommands, execute: executeCommand }],
+      ['commands', { list: listCommands, execute: executeCommand, register: registerCommand }],
       ['tools', { get: getTool }],
     ])
     const ctx: HarnessContext = {
@@ -276,7 +295,7 @@ describe('Harness session event normalization', () => {
       agent,
       get: (name: string) => name === 'userQuestions' ? {
         registerProvider: (provider: typeof questionProvider) => { questionProvider = provider; return vi.fn() },
-      } : undefined,
+      } : serviceValues.get(name),
       provide: vi.fn(),
       on: vi.fn(() => vi.fn()),
     })
@@ -287,6 +306,29 @@ describe('Harness session event normalization', () => {
     expect(() => questionProvider?.ask({
       questions: [{ id: 'child', question: 'Blocked?' }], agent: { ...agent },
     })).toThrow('exact root TUI agent')
+    expect(created.currentModel()).toEqual({
+      provider: 'deepseek-official', model: 'deepseek-v4-pro', reasoningEffort: 'high',
+    })
+    await expect(created.listModels()).resolves.toMatchObject({
+      current: { provider: 'deepseek-official', model: 'deepseek-v4-pro' },
+      providers: [{ id: 'deepseek-official', models: [{ id: 'deepseek-v4-pro' }] }],
+      failures: [],
+    })
+    await expect(modelCommand?.handler({ agent, rawInput: 'info' })).resolves.toEqual({
+      kind: 'success', text: 'Current model: deepseek-official/deepseek-v4-pro:high',
+    })
+    await expect(modelCommand?.handler({ agent, rawInput: 'deepseek-official/deepseek-v4-pro' }))
+      .resolves.toMatchObject({ kind: 'success' })
+    expect(created.currentModel()).toEqual({
+      provider: 'deepseek-official', model: 'deepseek-v4-pro',
+    })
+    saveSelection.mockRejectedValueOnce(new Error('settings unavailable'))
+    await expect(modelCommand?.handler({
+      agent, rawInput: 'save deepseek-official/future-model',
+    })).resolves.toEqual({ kind: 'error', text: 'settings unavailable' })
+    expect(created.currentModel()).toEqual({
+      provider: 'deepseek-official', model: 'deepseek-v4-pro',
+    })
     await expect(created.flush()).resolves.toBe(true)
     expect(flush).toHaveBeenCalledWith(session)
     expect(hooks.projection).toHaveBeenCalledWith({

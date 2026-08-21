@@ -57,11 +57,23 @@ export function fakeHarness(options: FakeHarnessOptions = {}) {
   const services = new Map<string, unknown>([
     ['loader', { await: async () => {} }],
     ['agents', { create, resume }],
-    ['agentDefaultModel', { currentSelection: () => ({ provider: 'p', model: 'm' }) }],
+    ['agentDefaultModel', {
+      currentSelection: () => ({ provider: 'p', model: 'm' }),
+      saveSelection: vi.fn(async () => {}),
+    }],
+    ['llm', {
+      listProviders: () => [{ id: 'p', name: 'Provider' }],
+      listModels: vi.fn(async () => [{ provider: 'p', id: 'm', name: 'Model' }]),
+      resolveModelInfo: vi.fn(async (provider: string, model: string) => ({ provider, id: model, name: model })),
+    }],
     ['sessions', { flush }],
     ['sessionProjections', { snapshot: () => ({ asOfSeq: 0, values: {} }), onChanged: () => () => {} }],
     ['sessionQuery', { listSessions }],
-    ['commands', { list: () => [{ name: 'compact', description: 'Compact context' }], execute }],
+    ['commands', {
+      list: () => [{ name: 'compact', description: 'Compact context' }],
+      execute,
+      register: vi.fn(() => () => {}),
+    }],
     ['tools', { get: () => undefined }],
   ])
   const ctx: HarnessContext = {

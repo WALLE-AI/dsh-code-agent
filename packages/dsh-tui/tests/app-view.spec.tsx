@@ -127,6 +127,9 @@ function mount(
     listSessions: vi.fn(),
     listFiles: vi.fn(),
     resumeSession: vi.fn(),
+    listModels: vi.fn(),
+    selectModel: vi.fn(),
+    closeModelPicker: vi.fn(),
     ...actions,
   }
   // No colour: assertions read the plain text the terminal would show.
@@ -648,6 +651,42 @@ describe('input routing', () => {
 })
 
 describe('command palette and folding', () => {
+  it('opens the existing command palette when the store requests it', async () => {
+    const store = new TuiStore(50)
+    store.setInteractive(true)
+    store.setCommands([{ name: 'status', description: 'Show status' }])
+    const { screen } = mount(store)
+    await settle()
+    store.requestCommandPalette()
+    await settle()
+    expect(screen()).toContain('Commands')
+    expect(screen()).toContain('/status')
+  })
+
+  it('selects a model from the full-screen picker', async () => {
+    const store = new TuiStore(50)
+    store.setInteractive(true)
+    store.setModelDirectory({
+      current: { provider: 'deepseek', model: 'chat' },
+      providers: [{
+        id: 'deepseek', name: 'DeepSeek',
+        models: [
+          { id: 'chat', name: 'DeepSeek Chat' },
+          { id: 'coder', name: 'DeepSeek Coder' },
+        ],
+      }],
+      failures: [],
+    })
+    store.setModelPicker(true)
+    const { calls, type, screen } = mount(store)
+    await settle()
+    expect(screen()).toContain('Models')
+    expect(screen()).toContain('DeepSeek Chat')
+    await type(`${ESC}[B`)
+    await type('\r')
+    expect(calls.selectModel).toHaveBeenCalledWith({ provider: 'deepseek', model: 'coder' })
+  })
+
   it('opens with Ctrl+P, filters, and prefills the chosen command', async () => {
     const store = new TuiStore(50)
     store.setInteractive(true)

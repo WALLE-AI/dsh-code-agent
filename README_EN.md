@@ -102,7 +102,7 @@ Project configuration never overwrites an already exported variable.
 | Area | Capability |
 |---|---|
 | Startup safety | Trust prompt before project access; rejection starts no Harness service; private atomic trust storage |
-| Conversation | No-argument REPL, streaming output, steering during a run, follow-ups, draft history, session resume |
+| Conversation | No-argument REPL, streaming output, steering during a run, follow-ups, draft history, session resume, per-session model switching |
 | Rendering | Markdown, code fences, tables, quotes, CJK wrapping, resize reflow, Unicode/ASCII fallback |
 | Tools | Run/edit/search/read/web cards, colored diffs, folding, nested calls, explicit truncation |
 | Permissions | read-only, workspace-write, danger-full-access, and fail-closed approvals |
@@ -127,9 +127,31 @@ Project configuration never overwrites an already exported variable.
 | <code>dshcodecli --diagnostic-log PATH</code> | Write a redacted JSONL diagnostic log |
 | <code>dshcodecli --help</code> | Show complete command-line help |
 
+## Interactive Commands
+
+Type <code>/</code> in the composer to complete commands. <code>/commands</code> and Ctrl+P open the same searchable command palette.
+
+| Command | Description |
+|---|---|
+| <code>/model</code> | Open the searchable model picker, including partial-provider failures and reasoning-effort selection |
+| <code>/model info</code> | Show the current session model |
+| <code>/model PROVIDER/MODEL[:EFFORT]</code> | Switch this session starting with the next turn |
+| <code>/model default</code> | Switch this session back to the saved default model |
+| <code>/model save PROVIDER/MODEL[:EFFORT]</code> | Switch this session and save the route for future new sessions |
+| <code>/status</code> | Show the session, model, permission, workspace, and runtime status |
+| <code>/context</code> | Show context-window and token usage |
+| <code>/permissions</code> | List permission presets; <code>/permissions PRESET</code> aliases <code>/permission PRESET</code> |
+| <code>/clear</code> | Flush and start a new session; alias for <code>/new</code> |
+| <code>/doctor</code> | Run read-only checks for the TTY, workspace, session, model catalog, and persistence |
+| <code>/config</code> | Show effective non-secret paths, model, and permission |
+| <code>/exit</code> | Flush and exit safely; alias for <code>/quit</code> |
+
+A model switch never changes an in-flight request; it starts with the next turn. A normal <code>/model ROUTE</code>
+is persisted as a session command and restored by <code>--resume</code>. Only <code>/model save ROUTE</code> changes the default for future sessions.
+
 ## Exit and Resume
 
-When you exit normally with <code>/quit</code>, the TUI waits for the active task and flushes the session. After persistence succeeds, the terminal prints the exact session ID and resume command:
+When you exit normally with <code>/quit</code> or <code>/exit</code>, the TUI waits for the active task and flushes the session. After persistence succeeds, the terminal prints the exact session ID and resume command:
 
 ~~~text
 Session saved: session-...
