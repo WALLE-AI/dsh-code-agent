@@ -298,7 +298,8 @@ pnpm run package:sea
 - [更新日志](CHANGELOG.md)
 - [兼容性矩阵](docs/phase-0-compatibility-matrix.md)
 - [架构决策记录](docs/adr/0001-external-tui-adapter-boundary.md)
-- [TUI 优化与执行记录](docs/tui-optimization-plan.md)
+- [TUI 优化与执行记录](docs/plans/tui-optimization-plan.md)
+- [完整文档索引](docs/README.md)
 - [TUI 子包说明](packages/dsh-tui/README.md)
 
 ## 参与项目

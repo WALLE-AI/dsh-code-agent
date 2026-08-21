@@ -313,7 +313,8 @@ Current limitations:
 - [Changelog](CHANGELOG.md)
 - [Compatibility matrix](docs/phase-0-compatibility-matrix.md)
 - [Architecture decision record](docs/adr/0001-external-tui-adapter-boundary.md)
-- [TUI optimization and execution record](docs/tui-optimization-plan.md)
+- [TUI optimization and execution record](docs/plans/tui-optimization-plan.md)
+- [Complete documentation index](docs/README.md)
 - [TUI package README](packages/dsh-tui/README.md)
 
 ## Contributing
