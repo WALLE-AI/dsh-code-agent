@@ -44,7 +44,8 @@ import { parseArgs } from 'node:util'
 /** The published name. `@deepseek-ai/dsh-tui` stays the bundle identity. */
 const DEFAULT_NAME = 'dshcodecli'
 /** The CLI the profile runs on, pinned rather than ranged: it is a prerelease. */
-const DSH_VERSION = '0.1.0-rc.7'
+const DSH_VERSION = '0.1.0-rc.8'
+const NPM_REGISTRY = 'https://registry.npmjs.org'
 
 const root = resolve(import.meta.dirname, '..')
 const packageDir = join(root, 'packages/dsh-tui')
@@ -121,7 +122,22 @@ copyFileSync(join(packageDir, 'package.json'), join(stagedPackage, 'package.json
 const published: Manifest = {
   ...source,
   name: publishName,
-  dependencies: { ...source.dependencies, '@deepseek-ai/dsh': dshVersion },
+  dependencies: {
+    ...source.dependencies,
+    '@deepseek-ai/dsh': dshVersion,
+    // The rc.8 CLI graph imports these runtime peers without carrying them at
+    // its root. Pinning the verified closure avoids npm 11's peer-tree search
+    // and keeps deterministic installs from producing a broken command.
+    '@deepseek-ai/cordis-plugin-group': '1.0.1',
+    '@deepseek-ai/dsh-atomic-write': dshVersion,
+    '@deepseek-ai/dsh-fs': dshVersion,
+    '@deepseek-ai/dsh-sandbox': dshVersion,
+    '@deepseek-ai/dsh-scope': dshVersion,
+    '@deepseek-ai/dsh-session-telemetry': dshVersion,
+    '@deepseek-ai/dsh-session-title-llm': dshVersion,
+    '@deepseek-ai/dsh-shell': dshVersion,
+    '@deepseek-ai/dsh-timeout': dshVersion,
+  },
   publishConfig: { access: 'public' },
 }
 delete published.private
@@ -150,7 +166,14 @@ if (verify) {
   writeFileSync(join(project, 'package.json'), `${JSON.stringify({
     name: 'dshcodecli-verify', private: true, version: '0.0.0',
   }, null, 2)}\n`)
-  run('npm', ['install', tarballPath], project)
+  // Harness has a large plugin graph with intentionally scoped peers. npm 11
+  // can spend minutes exploring equivalent peer placements, especially when a
+  // machine-level mirror serves mixed prerelease metadata. The runtime peer
+  // this profile needs is explicit in the staged manifest above, so the legacy
+  // resolver is deterministic without omitting a required package.
+  run('npm', [
+    'install', '--legacy-peer-deps', '--registry', NPM_REGISTRY, tarballPath,
+  ], project)
 
   const binary = join(project, 'node_modules/.bin/dshcodecli')
   // The CLI must have come along as a dependency; without it the command

@@ -4,6 +4,31 @@ All notable changes to the DeepSeek Harness TUI profile.
 
 ## Unreleased
 
+## 0.1.6 - 2026-08-21
+
+### Added
+
+- Added a searchable `/model` picker, direct session model routes, reasoning
+  effort selection, `/model default`, `/model save`, and deterministic model
+  restoration after `--resume`.
+- Added `/status`, `/context`, `/doctor`, `/config`, `/commands`, `/clear`,
+  `/exit`, and `/permissions` interactive commands while preserving Harness
+  command logging and unrestricted-permission confirmation.
+- Added no-task interactive startup, workspace trust confirmation,
+  `--resume-select`, `-r`, current-workspace session discovery, and exact
+  post-quit resume receipts.
+
+### Changed
+
+- Reworked the Chinese and English project READMEs, added the current TUI
+  screenshot, and organized architecture and execution documents under
+  `docs/` with a central index.
+- Updated the published package runtime dependency to `@deepseek-ai/dsh`
+  `0.1.0-rc.8`, keeping its transitive Harness packages on one release line,
+  and explicitly included the runtime peer closure required by its profile.
+
+## 0.1.5 - 2026-08-20
+
 ### Fixed
 
 - **The transcript showed the answer above the evidence that produced it.** A
